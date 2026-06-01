@@ -1,6 +1,7 @@
 -- ============================================================
 -- DrawObsidian - Matcha Drawing-based Obsidian-style UI
--- Window + tabs + groupboxes + dropdowns (all variants)
+-- All widgets: dropdown variants, button, toggle, checkbox,
+--              label, slider, textbox, color, keybind
 -- ============================================================
 
 local Library = {}
@@ -25,12 +26,14 @@ local Theme = {
     TextDim      = "#7a7a82",
     TextDisabled = "#4a4a52",
     CheckOn      = "#7c5cff",
+    ButtonBg     = "#1a1a20",
+    SliderFill   = "#7c5cff",
 }
 
 local Z = {
     Bg = 10, Panel = 20, Border = 25, Tab = 30, TabText = 35,
     Groupbox = 40, GroupboxBorder = 42, GroupboxText = 45,
-    Widget = 50, WidgetBorder = 52, WidgetText = 55,
+    Widget = 50, WidgetBorder = 52, WidgetText = 55, WidgetOver = 58,
     Popup = 80, PopupBorder = 82, PopupText = 85, PopupOver = 88,
 }
 
@@ -56,12 +59,10 @@ local function pointIn(pos, rPos, rSize)
        and pos.Y >= rPos.Y and pos.Y <= rPos.Y + rSize.Y
 end
 
--- safe Teams resolver, some matcha builds dont expose GetTeams
 local function listTeamNames()
     local out = {}
     local ok, teams = pcall(function() return game:GetService("Teams") end)
     if not ok or not teams then return out end
-    -- try the API method first, fall back to GetChildren
     local ok2, list = pcall(function() return teams:GetTeams() end)
     if ok2 and type(list) == "table" then
         for _, t in ipairs(list) do table.insert(out, t.Name) end
@@ -76,6 +77,60 @@ local function listTeamNames()
     return out
 end
 
+-- ============================================================
+-- color helpers, used by color picker
+-- ============================================================
+local function clamp01(x) if x < 0 then return 0 elseif x > 1 then return 1 else return x end end
+
+local function hsvToRgb(h, s, v)
+    if s == 0 then return v, v, v end
+    h = (h % 1) * 6
+    local i = math.floor(h)
+    local f = h - i
+    local p = v * (1 - s)
+    local q = v * (1 - s * f)
+    local t = v * (1 - s * (1 - f))
+    if     i == 0 then return v, t, p
+    elseif i == 1 then return q, v, p
+    elseif i == 2 then return p, v, t
+    elseif i == 3 then return p, q, v
+    elseif i == 4 then return t, p, v
+    else                return v, p, q end
+end
+
+local function rgbToHsv(r, g, b)
+    local mx = math.max(r, g, b)
+    local mn = math.min(r, g, b)
+    local d = mx - mn
+    local h, s, v = 0, (mx == 0) and 0 or d / mx, mx
+    if d ~= 0 then
+        if mx == r then h = ((g - b) / d) % 6
+        elseif mx == g then h = (b - r) / d + 2
+        else h = (r - g) / d + 4 end
+        h = h / 6
+    end
+    return h, s, v
+end
+
+local KeyNames = {
+    [48]="0",[49]="1",[50]="2",[51]="3",[52]="4",[53]="5",[54]="6",[55]="7",[56]="8",[57]="9",
+    [8]="Backspace",[13]="Enter",[16]="Shift",[27]="Esc",[32]="Space",[38]="Up",[40]="Down",
+    [65]="A",[66]="B",[67]="C",[68]="D",[69]="E",[70]="F",[71]="G",[72]="H",[73]="I",[74]="J",
+    [75]="K",[76]="L",[77]="M",[78]="N",[79]="O",[80]="P",[81]="Q",[82]="R",[83]="S",[84]="T",
+    [85]="U",[86]="V",[87]="W",[88]="X",[89]="Y",[90]="Z",
+    [112]="F1",[113]="F2",[114]="F3",[115]="F4",[116]="F5",[117]="F6",[118]="F7",[119]="F8",
+    [120]="F9",[121]="F10",[122]="F11",[123]="F12",
+    [189]="-",
+}
+
+local function keyCodeName(kc)
+    if KeyNames[kc] then return KeyNames[kc] end
+    return "VK" .. tostring(kc)
+end
+
+-- ============================================================
+-- Window
+-- ============================================================
 function Library.CreateWindow(opts)
     opts = opts or {}
     local self = setmetatable({}, Library)
@@ -97,7 +152,9 @@ function Library.CreateWindow(opts)
     self._lastMouse1 = false
     self._lastToggle = false
     self._openPopup = nil
-    self._focusedSearch = nil
+    self._focusedText = nil       -- search dropdown or textbox that owns the keyboard
+    self._capturingKeybind = nil  -- keybind widget waiting for next key
+    self._activeSlider = nil      -- slider currently being dragged
     self._keyState = {}
     self._keyRepeat = {}
 
@@ -142,7 +199,7 @@ function Library:_applyPositions()
         for _, gb in ipairs(tab.Groupboxes) do
             self:_repositionGroupbox(gb)
             for _, w in ipairs(gb.Widgets) do
-                if w._reposition then w:_reposition(self.Pos) end
+                if w._reposition then w:_reposition() end
             end
         end
     end
@@ -155,6 +212,9 @@ function Library:_repositionGroupbox(gb)
     gb.TitleBg.Position = gb.BG.Position + Vector2.new(8, -8)
 end
 
+-- ============================================================
+-- Tabs
+-- ============================================================
 function Library:AddTab(name)
     local index = #self.Tabs + 1
     local yOff = 50 + (index - 1) * 30
@@ -197,6 +257,8 @@ function Library:SetActiveTab(tab)
         t.Accent.Visible = active and self.Visible
     end
     if self._openPopup then self._openPopup:_close() end
+    self._focusedText = nil
+    self._capturingKeybind = nil
     for _, t in ipairs(self.Tabs) do
         local show = (t == tab) and self.Visible
         for _, gb in ipairs(t.Groupboxes) do
@@ -208,6 +270,9 @@ function Library:SetActiveTab(tab)
     end
 end
 
+-- ============================================================
+-- Groupboxes
+-- ============================================================
 function Library:_createGroupbox(tab, side, name)
     local gb = {}
     gb.Name = name; gb.Side = side; gb.Tab = tab
@@ -243,6 +308,14 @@ function Library:_createGroupbox(tab, side, name)
     function gb:AddMultiDropdown(opts)  return self.Window:_addDropdown(self, "multi",  opts) end
     function gb:AddPlayerDropdown(opts) return self.Window:_addDropdown(self, "player", opts) end
     function gb:AddTeamDropdown(opts)   return self.Window:_addDropdown(self, "team",   opts) end
+    function gb:AddButton(opts)         return self.Window:_addButton(self, opts) end
+    function gb:AddToggle(opts)         return self.Window:_addToggle(self, opts) end
+    function gb:AddCheckbox(opts)       return self.Window:_addCheckbox(self, opts) end
+    function gb:AddLabel(opts)          return self.Window:_addLabel(self, opts) end
+    function gb:AddSlider(opts)         return self.Window:_addSlider(self, opts) end
+    function gb:AddTextbox(opts)        return self.Window:_addTextbox(self, opts) end
+    function gb:AddColor(opts)          return self.Window:_addColor(self, opts) end
+    function gb:AddKeybind(opts)        return self.Window:_addKeybind(self, opts) end
 
     if side == "left" then tab.LeftCursor = cursor + gb.Height + 10
     else tab.RightCursor = cursor + gb.Height + 10 end
@@ -269,6 +342,727 @@ function Library:_growGroupbox(gb, addedHeight)
     else tab.RightCursor = tab.RightCursor + addedHeight end
 end
 
+-- ============================================================
+-- BUTTON
+-- ============================================================
+function Library:_addButton(gb, opts)
+    opts = opts or {}
+    local widgetH = 26
+    local yIn = gb.InnerCursor
+
+    local b = {
+        Gb = gb, Window = self,
+        Text = opts.Text or "Button",
+        Disabled = opts.Disabled or false,
+        Callback = opts.Callback or function() end,
+        _yIn = yIn, _height = widgetH,
+    }
+
+    b.BG = rect(Z.Widget, Theme.ButtonBg); b.BG.Corner = 3
+    b.Border = rect(Z.WidgetBorder, Theme.InputBorder, false)
+    b.Border.Thickness = 1; b.Border.Corner = 3
+    b.TextDraw = label(Z.WidgetText, Theme.TextPrimary, 12, b.Text)
+    b.TextDraw.Center = true
+
+    function b:_reposition()
+        local gx = self.Gb.BG.Position.X
+        local gy = self.Gb.BG.Position.Y + self._yIn
+        local w = self.Gb.Width - 20
+        self.BG.Position = Vector2.new(gx + 10, gy)
+        self.BG.Size = Vector2.new(w, 22)
+        self.Border.Position = self.BG.Position
+        self.Border.Size = self.BG.Size
+        self.TextDraw.Position = self.BG.Position + Vector2.new(w / 2, 5)
+    end
+
+    function b:_setVisible(state)
+        self.BG.Visible = state
+        self.Border.Visible = state
+        self.TextDraw.Visible = state
+        self.TextDraw.Color = Color3.fromHex(self.Disabled and Theme.TextDisabled or Theme.TextPrimary)
+    end
+
+    function b:_handleClick(mPos)
+        if self.Disabled then return false end
+        if pointIn(mPos, self.BG.Position, self.BG.Size) then
+            self.Callback()
+            return true
+        end
+        return false
+    end
+
+    function b:SetText(txt) self.Text = txt; self.TextDraw.Text = txt end
+    function b:SetDisabled(d) self.Disabled = d; self:_setVisible(self.BG.Visible) end
+
+    table.insert(gb.Widgets, b)
+    self:_growGroupbox(gb, widgetH)
+    gb.InnerCursor = gb.InnerCursor + widgetH
+    b:_reposition()
+    b:_setVisible(gb.Tab == self.ActiveTab and self.Visible)
+    return b
+end
+
+-- ============================================================
+-- TOGGLE   (label on the left, knob switch on the right)
+-- ============================================================
+function Library:_addToggle(gb, opts)
+    opts = opts or {}
+    local widgetH = 22
+    local yIn = gb.InnerCursor
+
+    local t = {
+        Gb = gb, Window = self,
+        Text = opts.Text or "Toggle",
+        Value = opts.Default == true,
+        Disabled = opts.Disabled or false,
+        Callback = opts.Callback or function() end,
+        _yIn = yIn, _height = widgetH,
+    }
+
+    t.TextDraw = label(Z.WidgetText, Theme.TextPrimary, 12, t.Text)
+    t.Track = rect(Z.Widget, Theme.InputBg); t.Track.Corner = 6
+    t.TrackBorder = rect(Z.WidgetBorder, Theme.InputBorder, false)
+    t.TrackBorder.Thickness = 1; t.TrackBorder.Corner = 6
+    t.Knob = rect(Z.WidgetText, Theme.TextPrimary); t.Knob.Corner = 5
+
+    function t:_reposition()
+        local gx = self.Gb.BG.Position.X
+        local gy = self.Gb.BG.Position.Y + self._yIn
+        self.TextDraw.Position = Vector2.new(gx + 10, gy + 2)
+        local trackW = 26
+        self.Track.Size = Vector2.new(trackW, 12)
+        self.Track.Position = Vector2.new(gx + self.Gb.Width - 10 - trackW, gy + 2)
+        self.TrackBorder.Position = self.Track.Position
+        self.TrackBorder.Size = self.Track.Size
+        self.Knob.Size = Vector2.new(8, 8)
+        local knobX = self.Value and (self.Track.Position.X + trackW - 10) or (self.Track.Position.X + 2)
+        self.Knob.Position = Vector2.new(knobX, self.Track.Position.Y + 2)
+    end
+
+    function t:_setVisible(state)
+        self.TextDraw.Visible = state
+        self.Track.Visible = state
+        self.TrackBorder.Visible = state
+        self.Knob.Visible = state
+        self.TextDraw.Color = Color3.fromHex(self.Disabled and Theme.TextDisabled or Theme.TextPrimary)
+        self.Track.Color = Color3.fromHex(self.Value and Theme.Accent or Theme.InputBg)
+    end
+
+    function t:_handleClick(mPos)
+        if self.Disabled then return false end
+        local hitArea = Vector2.new(self.Gb.Width - 20, 20)
+        local hitPos = Vector2.new(self.Gb.BG.Position.X + 10, self.Gb.BG.Position.Y + self._yIn)
+        if pointIn(mPos, hitPos, hitArea) then
+            self.Value = not self.Value
+            self:_reposition()
+            self:_setVisible(true)
+            self.Callback(self.Value)
+            return true
+        end
+        return false
+    end
+
+    function t:SetValue(v) self.Value = v and true or false; self:_reposition(); self:_setVisible(true) end
+    function t:GetValue() return self.Value end
+
+    table.insert(gb.Widgets, t)
+    self:_growGroupbox(gb, widgetH)
+    gb.InnerCursor = gb.InnerCursor + widgetH
+    t:_reposition()
+    t:_setVisible(gb.Tab == self.ActiveTab and self.Visible)
+    return t
+end
+
+-- ============================================================
+-- CHECKBOX   (square check mark on the left, label on the right)
+-- ============================================================
+function Library:_addCheckbox(gb, opts)
+    opts = opts or {}
+    local widgetH = 22
+    local yIn = gb.InnerCursor
+
+    local c = {
+        Gb = gb, Window = self,
+        Text = opts.Text or "Checkbox",
+        Value = opts.Default == true,
+        Disabled = opts.Disabled or false,
+        Callback = opts.Callback or function() end,
+        _yIn = yIn, _height = widgetH,
+    }
+
+    c.Box = rect(Z.Widget, Theme.InputBg); c.Box.Corner = 2
+    c.BoxBorder = rect(Z.WidgetBorder, Theme.InputBorder, false)
+    c.BoxBorder.Thickness = 1; c.BoxBorder.Corner = 2
+    c.Check = rect(Z.WidgetText, Theme.Accent); c.Check.Corner = 1
+    c.TextDraw = label(Z.WidgetText, Theme.TextPrimary, 12, c.Text)
+
+    function c:_reposition()
+        local gx = self.Gb.BG.Position.X
+        local gy = self.Gb.BG.Position.Y + self._yIn
+        self.Box.Size = Vector2.new(12, 12)
+        self.Box.Position = Vector2.new(gx + 10, gy + 3)
+        self.BoxBorder.Position = self.Box.Position
+        self.BoxBorder.Size = self.Box.Size
+        self.Check.Size = Vector2.new(8, 8)
+        self.Check.Position = self.Box.Position + Vector2.new(2, 2)
+        self.TextDraw.Position = self.Box.Position + Vector2.new(18, -1)
+    end
+
+    function c:_setVisible(state)
+        self.Box.Visible = state
+        self.BoxBorder.Visible = state
+        self.Check.Visible = state and self.Value
+        self.TextDraw.Visible = state
+        self.TextDraw.Color = Color3.fromHex(self.Disabled and Theme.TextDisabled or Theme.TextPrimary)
+    end
+
+    function c:_handleClick(mPos)
+        if self.Disabled then return false end
+        local hitArea = Vector2.new(self.Gb.Width - 20, 20)
+        local hitPos = Vector2.new(self.Gb.BG.Position.X + 10, self.Gb.BG.Position.Y + self._yIn)
+        if pointIn(mPos, hitPos, hitArea) then
+            self.Value = not self.Value
+            self:_setVisible(true)
+            self.Callback(self.Value)
+            return true
+        end
+        return false
+    end
+
+    function c:SetValue(v) self.Value = v and true or false; self:_setVisible(true) end
+    function c:GetValue() return self.Value end
+
+    table.insert(gb.Widgets, c)
+    self:_growGroupbox(gb, widgetH)
+    gb.InnerCursor = gb.InnerCursor + widgetH
+    c:_reposition()
+    c:_setVisible(gb.Tab == self.ActiveTab and self.Visible)
+    return c
+end
+
+-- ============================================================
+-- LABEL  (plain or wrapping text)
+-- ============================================================
+function Library:_addLabel(gb, opts)
+    opts = opts or {}
+    local text = opts.Text or "Label"
+    local wrap = opts.Wrap == true
+    local yIn = gb.InnerCursor
+
+    local lines = {}
+    if wrap then
+        -- crude word-wrap, ~28 chars per line at 12pt in the column width
+        local charsPerLine = math.max(10, math.floor((gb.Width - 20) / 7))
+        local cur = ""
+        for word in text:gmatch("%S+") do
+            local cand = (cur == "") and word or (cur .. " " .. word)
+            if #cand > charsPerLine then
+                table.insert(lines, cur)
+                cur = word
+            else
+                cur = cand
+            end
+        end
+        if cur ~= "" then table.insert(lines, cur) end
+    else
+        lines = { text }
+    end
+    local widgetH = #lines * 14 + 4
+
+    local lab = { Gb = gb, Window = self, Lines = {}, _yIn = yIn, _height = widgetH, Text = text }
+    for _, line in ipairs(lines) do
+        local l = label(Z.WidgetText, Theme.TextPrimary, 12, line)
+        table.insert(lab.Lines, l)
+    end
+
+    function lab:_reposition()
+        local gx = self.Gb.BG.Position.X
+        local gy = self.Gb.BG.Position.Y + self._yIn
+        for i, l in ipairs(self.Lines) do
+            l.Position = Vector2.new(gx + 10, gy + (i - 1) * 14)
+        end
+    end
+
+    function lab:_setVisible(state)
+        for _, l in ipairs(self.Lines) do l.Visible = state end
+    end
+
+    function lab:_handleClick() return false end
+
+    function lab:SetText(newText)
+        for _, l in ipairs(self.Lines) do l.Text = "" end
+        self.Lines[1].Text = newText
+        self.Text = newText
+    end
+
+    table.insert(gb.Widgets, lab)
+    self:_growGroupbox(gb, widgetH)
+    gb.InnerCursor = gb.InnerCursor + widgetH
+    lab:_reposition()
+    lab:_setVisible(gb.Tab == self.ActiveTab and self.Visible)
+    return lab
+end
+
+-- ============================================================
+-- SLIDER
+-- ============================================================
+function Library:_addSlider(gb, opts)
+    opts = opts or {}
+    local widgetH = 34
+    local yIn = gb.InnerCursor
+
+    local s = {
+        Gb = gb, Window = self,
+        Text = opts.Text or "Slider",
+        Min = opts.Min or 0,
+        Max = opts.Max or 100,
+        Value = opts.Default or opts.Min or 0,
+        Step = opts.Step or 1,
+        Format = opts.Format or "%d / %d",
+        Callback = opts.Callback or function() end,
+        _yIn = yIn, _height = widgetH,
+    }
+
+    s.Label = label(Z.WidgetText, Theme.TextDim, 11, s.Text)
+    s.Track = rect(Z.Widget, Theme.InputBg); s.Track.Corner = 2
+    s.TrackBorder = rect(Z.WidgetBorder, Theme.InputBorder, false)
+    s.TrackBorder.Thickness = 1; s.TrackBorder.Corner = 2
+    s.Fill = rect(Z.WidgetText, Theme.SliderFill); s.Fill.Corner = 2
+    s.ValueText = label(Z.WidgetOver, Theme.TextPrimary, 11, "")
+    s.ValueText.Center = true
+
+    function s:_format()
+        local ok, str = pcall(string.format, self.Format, self.Value, self.Max)
+        if ok then return str end
+        return tostring(self.Value)
+    end
+
+    function s:_reposition()
+        local gx = self.Gb.BG.Position.X
+        local gy = self.Gb.BG.Position.Y + self._yIn
+        local w = self.Gb.Width - 20
+        self.Label.Position = Vector2.new(gx + 10, gy)
+        self.Track.Size = Vector2.new(w, 14)
+        self.Track.Position = Vector2.new(gx + 10, gy + 14)
+        self.TrackBorder.Position = self.Track.Position
+        self.TrackBorder.Size = self.Track.Size
+        local pct = (self.Value - self.Min) / math.max(0.0001, (self.Max - self.Min))
+        if pct < 0 then pct = 0 elseif pct > 1 then pct = 1 end
+        self.Fill.Position = self.Track.Position
+        self.Fill.Size = Vector2.new(math.max(2, w * pct), 14)
+        self.ValueText.Position = self.Track.Position + Vector2.new(w / 2, 1)
+        self.ValueText.Text = self:_format()
+    end
+
+    function s:_setVisible(state)
+        self.Label.Visible = state
+        self.Track.Visible = state
+        self.TrackBorder.Visible = state
+        self.Fill.Visible = state
+        self.ValueText.Visible = state
+    end
+
+    function s:_setValueFromX(x)
+        local w = self.Track.Size.X
+        local rel = x - self.Track.Position.X
+        local pct = rel / w
+        if pct < 0 then pct = 0 elseif pct > 1 then pct = 1 end
+        local raw = self.Min + (self.Max - self.Min) * pct
+        if self.Step > 0 then
+            raw = math.floor((raw - self.Min) / self.Step + 0.5) * self.Step + self.Min
+        end
+        if raw < self.Min then raw = self.Min elseif raw > self.Max then raw = self.Max end
+        self.Value = raw
+        self:_reposition()
+        self.Callback(self.Value)
+    end
+
+    function s:_handleClick(mPos)
+        if pointIn(mPos, self.Track.Position, self.Track.Size) then
+            self.Window._activeSlider = self
+            self:_setValueFromX(mPos.X)
+            return true
+        end
+        return false
+    end
+
+    function s:SetValue(v) self.Value = v; self:_reposition() end
+    function s:GetValue() return self.Value end
+
+    table.insert(gb.Widgets, s)
+    self:_growGroupbox(gb, widgetH)
+    gb.InnerCursor = gb.InnerCursor + widgetH
+    s:_reposition()
+    s:_setVisible(gb.Tab == self.ActiveTab and self.Visible)
+    return s
+end
+
+-- ============================================================
+-- TEXTBOX
+-- ============================================================
+function Library:_addTextbox(gb, opts)
+    opts = opts or {}
+    local widgetH = 38
+    local yIn = gb.InnerCursor
+
+    local tb = {
+        Gb = gb, Window = self,
+        Text = opts.Text or "Textbox",
+        Value = opts.Default or "",
+        Placeholder = opts.Placeholder or "Type here...",
+        MaxLength = opts.MaxLength or 60,
+        Callback = opts.Callback or function() end,
+        _yIn = yIn, _height = widgetH,
+        _focused = false,
+        _isTextbox = true,
+    }
+
+    tb.Label = label(Z.WidgetText, Theme.TextDim, 11, tb.Text)
+    tb.Field = rect(Z.Widget, Theme.InputBg); tb.Field.Corner = 3
+    tb.FieldBorder = rect(Z.WidgetBorder, Theme.InputBorder, false)
+    tb.FieldBorder.Thickness = 1; tb.FieldBorder.Corner = 3
+    tb.FieldText = label(Z.WidgetText, Theme.TextPrimary, 12, "")
+
+    function tb:_displayText()
+        if self.Value == "" then
+            return self.Placeholder, true
+        end
+        return self.Value, false
+    end
+
+    function tb:_reposition()
+        local gx = self.Gb.BG.Position.X
+        local gy = self.Gb.BG.Position.Y + self._yIn
+        local w = self.Gb.Width - 20
+        self.Label.Position = Vector2.new(gx + 10, gy)
+        self.Field.Position = Vector2.new(gx + 10, gy + 14)
+        self.Field.Size = Vector2.new(w, 22)
+        self.FieldBorder.Position = self.Field.Position
+        self.FieldBorder.Size = self.Field.Size
+        self.FieldText.Position = self.Field.Position + Vector2.new(6, 4)
+        local txt, isPlaceholder = self:_displayText()
+        self.FieldText.Text = self._focused and (self.Value == "" and "|" or self.Value) or txt
+        self.FieldText.Color = Color3.fromHex(isPlaceholder and not self._focused and Theme.TextDim or Theme.TextPrimary)
+        self.FieldBorder.Color = Color3.fromHex(self._focused and Theme.Accent or Theme.InputBorder)
+    end
+
+    function tb:_setVisible(state)
+        self.Label.Visible = state
+        self.Field.Visible = state
+        self.FieldBorder.Visible = state
+        self.FieldText.Visible = state
+        if not state then self._focused = false end
+    end
+
+    function tb:_handleClick(mPos)
+        local hit = pointIn(mPos, self.Field.Position, self.Field.Size)
+        if hit then
+            self._focused = true
+            self.Window._focusedText = self
+            self:_reposition()
+            return true
+        else
+            if self._focused then
+                self._focused = false
+                if self.Window._focusedText == self then self.Window._focusedText = nil end
+                self.Callback(self.Value)
+                self:_reposition()
+            end
+            return false
+        end
+    end
+
+    function tb:_handleKey(keyCode, shift)
+        if not self._focused then return end
+        local changed = false
+        if keyCode >= 48 and keyCode <= 57 and #self.Value < self.MaxLength then
+            self.Value = self.Value .. tostring(keyCode - 48); changed = true
+        elseif keyCode >= 65 and keyCode <= 90 and #self.Value < self.MaxLength then
+            local c = string.char(keyCode); if not shift then c = c:lower() end
+            self.Value = self.Value .. c; changed = true
+        elseif keyCode == 32 and #self.Value < self.MaxLength then
+            self.Value = self.Value .. " "; changed = true
+        elseif keyCode == 189 and #self.Value < self.MaxLength then
+            self.Value = self.Value .. "-"; changed = true
+        elseif keyCode == 8 and #self.Value > 0 then
+            self.Value = self.Value:sub(1, -2); changed = true
+        elseif keyCode == 13 or keyCode == 27 then
+            self._focused = false
+            if self.Window._focusedText == self then self.Window._focusedText = nil end
+            self.Callback(self.Value)
+            changed = true
+        end
+        if changed then self:_reposition() end
+    end
+
+    function tb:SetValue(v) self.Value = tostring(v); self:_reposition() end
+    function tb:GetValue() return self.Value end
+
+    table.insert(gb.Widgets, tb)
+    self:_growGroupbox(gb, widgetH)
+    gb.InnerCursor = gb.InnerCursor + widgetH
+    tb:_reposition()
+    tb:_setVisible(gb.Tab == self.ActiveTab and self.Visible)
+    return tb
+end
+
+-- ============================================================
+-- COLOR PICKER (label + small swatch, click to open hue/sat popup)
+-- ============================================================
+function Library:_addColor(gb, opts)
+    opts = opts or {}
+    local widgetH = 22
+    local yIn = gb.InnerCursor
+
+    local default = opts.Default or Color3.fromRGB(255, 255, 255)
+    local h, s, v = rgbToHsv(default.R, default.G, default.B)
+
+    local cp = {
+        Gb = gb, Window = self,
+        Text = opts.Text or "Color",
+        Callback = opts.Callback or function() end,
+        H = h, S = s, V = v,
+        Open = false,
+        _yIn = yIn, _height = widgetH,
+        _isPopup = true,
+    }
+
+    cp.TextDraw = label(Z.WidgetText, Theme.TextPrimary, 12, cp.Text)
+    cp.Swatch = rect(Z.Widget, "#ffffff")
+    cp.SwatchBorder = rect(Z.WidgetBorder, Theme.InputBorder, false)
+    cp.SwatchBorder.Thickness = 1
+
+    -- popup elements
+    cp.PopupBg = rect(Z.Popup, Theme.PopupBg); cp.PopupBg.Corner = 3
+    cp.PopupBorder = rect(Z.PopupBorder, Theme.BorderLight, false)
+    cp.PopupBorder.Thickness = 1; cp.PopupBorder.Corner = 3
+
+    -- saturation/value square, approximated with stacked rows (Drawing has no gradient)
+    cp._svRows = {}
+    local rows = 12
+    for i = 1, rows do
+        local r = rect(Z.PopupText, "#ffffff")
+        table.insert(cp._svRows, r)
+    end
+
+    -- hue strip, also approximated with vertical bars
+    cp._hueBars = {}
+    local bars = 16
+    for i = 1, bars do
+        local r = rect(Z.PopupText, "#ffffff")
+        table.insert(cp._hueBars, r)
+    end
+
+    cp._svCursor = rect(Z.PopupOver, "#ffffff", false)
+    cp._svCursor.Thickness = 2
+    cp._hueCursor = rect(Z.PopupOver, "#ffffff", false)
+    cp._hueCursor.Thickness = 2
+
+    function cp:_currentColor()
+        local r, g, b = hsvToRgb(self.H, self.S, self.V)
+        return Color3.new(r, g, b)
+    end
+
+    function cp:_updateSwatch()
+        self.Swatch.Color = self:_currentColor()
+    end
+
+    function cp:_reposition()
+        local gx = self.Gb.BG.Position.X
+        local gy = self.Gb.BG.Position.Y + self._yIn
+        self.TextDraw.Position = Vector2.new(gx + 10, gy + 2)
+        self.Swatch.Size = Vector2.new(16, 12)
+        self.Swatch.Position = Vector2.new(gx + self.Gb.Width - 10 - 16, gy + 3)
+        self.SwatchBorder.Position = self.Swatch.Position
+        self.SwatchBorder.Size = self.Swatch.Size
+        if self.Open then self:_layoutPopup() end
+    end
+
+    function cp:_layoutPopup()
+        local sx = self.Swatch.Position.X
+        local sy = self.Swatch.Position.Y + self.Swatch.Size.Y + 4
+        local popupW = 130
+        local popupH = 90
+        -- clamp to window so it doesn't fly off
+        sx = math.min(sx, self.Window.Pos.X + self.Window.Size.X - popupW - 4)
+        self.PopupBg.Position = Vector2.new(sx, sy)
+        self.PopupBg.Size = Vector2.new(popupW, popupH)
+        self.PopupBg.Visible = true
+        self.PopupBorder.Position = self.PopupBg.Position
+        self.PopupBorder.Size = self.PopupBg.Size
+        self.PopupBorder.Visible = true
+
+        local svW, svH = 90, 70
+        local svX, svY = sx + 6, sy + 6
+
+        for i, r in ipairs(self._svRows) do
+            local frac = (i - 1) / (#self._svRows - 1)
+            local rowR, rowG, rowB = hsvToRgb(self.H, 1 - 0, 1 - frac)  -- simple value gradient
+            r.Position = Vector2.new(svX, svY + (i - 1) * (svH / #self._svRows))
+            r.Size = Vector2.new(svW, math.ceil(svH / #self._svRows))
+            r.Color = Color3.new(rowR, rowG, rowB)
+            r.Visible = true
+        end
+
+        for i, r in ipairs(self._hueBars) do
+            local frac = (i - 1) / (#self._hueBars - 1)
+            local hr, hg, hb = hsvToRgb(frac, 1, 1)
+            r.Position = Vector2.new(sx + 6 + svW + 6, svY + (i - 1) * (svH / #self._hueBars))
+            r.Size = Vector2.new(20, math.ceil(svH / #self._hueBars))
+            r.Color = Color3.new(hr, hg, hb)
+            r.Visible = true
+        end
+
+        -- cursors
+        self._svCursor.Position = Vector2.new(svX + self.S * svW - 4, svY + (1 - self.V) * svH - 4)
+        self._svCursor.Size = Vector2.new(8, 8)
+        self._svCursor.Visible = true
+        self._hueCursor.Position = Vector2.new(sx + 6 + svW + 6, svY + self.H * svH - 2)
+        self._hueCursor.Size = Vector2.new(20, 4)
+        self._hueCursor.Visible = true
+
+        self._svRect = { Pos = Vector2.new(svX, svY), Size = Vector2.new(svW, svH) }
+        self._hueRect = { Pos = Vector2.new(sx + 6 + svW + 6, svY), Size = Vector2.new(20, svH) }
+    end
+
+    function cp:_close()
+        self.Open = false
+        if self.Window._openPopup == self then self.Window._openPopup = nil end
+        self.PopupBg.Visible = false; self.PopupBorder.Visible = false
+        for _, r in ipairs(self._svRows) do r.Visible = false end
+        for _, r in ipairs(self._hueBars) do r.Visible = false end
+        self._svCursor.Visible = false; self._hueCursor.Visible = false
+    end
+
+    function cp:_open()
+        if self.Window._openPopup and self.Window._openPopup ~= self then
+            self.Window._openPopup:_close()
+        end
+        self.Open = true
+        self.Window._openPopup = self
+        self:_layoutPopup()
+    end
+
+    function cp:_setVisible(state)
+        self.TextDraw.Visible = state
+        self.Swatch.Visible = state
+        self.SwatchBorder.Visible = state
+        if not state then self:_close() end
+    end
+
+    function cp:_handleClick(mPos)
+        if pointIn(mPos, self.Swatch.Position, self.Swatch.Size) then
+            if self.Open then self:_close() else self:_open() end
+            return true
+        end
+        if not self.Open then return false end
+        if pointIn(mPos, self.PopupBg.Position, self.PopupBg.Size) then
+            if pointIn(mPos, self._svRect.Pos, self._svRect.Size) then
+                self.S = clamp01((mPos.X - self._svRect.Pos.X) / self._svRect.Size.X)
+                self.V = clamp01(1 - (mPos.Y - self._svRect.Pos.Y) / self._svRect.Size.Y)
+                self:_updateSwatch(); self:_layoutPopup()
+                self.Callback(self:_currentColor())
+                return true
+            end
+            if pointIn(mPos, self._hueRect.Pos, self._hueRect.Size) then
+                self.H = clamp01((mPos.Y - self._hueRect.Pos.Y) / self._hueRect.Size.Y)
+                self:_updateSwatch(); self:_layoutPopup()
+                self.Callback(self:_currentColor())
+                return true
+            end
+            return true
+        end
+        return false
+    end
+
+    function cp:SetColor(c) self.H, self.S, self.V = rgbToHsv(c.R, c.G, c.B); self:_updateSwatch() end
+    function cp:GetColor() return self:_currentColor() end
+
+    table.insert(gb.Widgets, cp)
+    self:_growGroupbox(gb, widgetH)
+    gb.InnerCursor = gb.InnerCursor + widgetH
+    cp:_reposition()
+    cp:_updateSwatch()
+    cp:_setVisible(gb.Tab == self.ActiveTab and self.Visible)
+    return cp
+end
+
+-- ============================================================
+-- KEYBIND  (click to capture, displays current key name)
+-- ============================================================
+function Library:_addKeybind(gb, opts)
+    opts = opts or {}
+    local widgetH = 22
+    local yIn = gb.InnerCursor
+
+    local kb = {
+        Gb = gb, Window = self,
+        Text = opts.Text or "Keybind",
+        Key = opts.Default or 0,
+        Capturing = false,
+        Callback = opts.Callback or function() end,
+        _yIn = yIn, _height = widgetH,
+    }
+
+    kb.TextDraw = label(Z.WidgetText, Theme.TextPrimary, 12, kb.Text)
+    kb.BG = rect(Z.Widget, Theme.InputBg); kb.BG.Corner = 3
+    kb.Border = rect(Z.WidgetBorder, Theme.InputBorder, false)
+    kb.Border.Thickness = 1; kb.Border.Corner = 3
+    kb.KeyText = label(Z.WidgetText, Theme.TextDim, 11, "...")
+    kb.KeyText.Center = true
+
+    function kb:_reposition()
+        local gx = self.Gb.BG.Position.X
+        local gy = self.Gb.BG.Position.Y + self._yIn
+        self.TextDraw.Position = Vector2.new(gx + 10, gy + 2)
+        self.BG.Size = Vector2.new(40, 16)
+        self.BG.Position = Vector2.new(gx + self.Gb.Width - 10 - 40, gy + 2)
+        self.Border.Position = self.BG.Position
+        self.Border.Size = self.BG.Size
+        self.KeyText.Position = self.BG.Position + Vector2.new(20, 2)
+        self.KeyText.Text = self.Capturing and "..." or keyCodeName(self.Key)
+        self.Border.Color = Color3.fromHex(self.Capturing and Theme.Accent or Theme.InputBorder)
+    end
+
+    function kb:_setVisible(state)
+        self.TextDraw.Visible = state
+        self.BG.Visible = state
+        self.Border.Visible = state
+        self.KeyText.Visible = state
+    end
+
+    function kb:_handleClick(mPos)
+        if pointIn(mPos, self.BG.Position, self.BG.Size) then
+            self.Capturing = true
+            self.Window._capturingKeybind = self
+            self:_reposition()
+            return true
+        end
+        return false
+    end
+
+    function kb:_captureKey(keyCode)
+        self.Key = keyCode
+        self.Capturing = false
+        if self.Window._capturingKeybind == self then self.Window._capturingKeybind = nil end
+        self:_reposition()
+        self.Callback(keyCode, keyCodeName(keyCode))
+    end
+
+    function kb:GetKey() return self.Key end
+    function kb:SetKey(k) self.Key = k; self:_reposition() end
+
+    table.insert(gb.Widgets, kb)
+    self:_growGroupbox(gb, widgetH)
+    gb.InnerCursor = gb.InnerCursor + widgetH
+    kb:_reposition()
+    kb:_setVisible(gb.Tab == self.ActiveTab and self.Visible)
+    return kb
+end
+
+-- ============================================================
+-- DROPDOWN  (kept from previous part, all variants)
+-- ============================================================
 function Library:_addDropdown(gb, variant, opts)
     opts = opts or {}
     local dd = {
@@ -287,6 +1081,7 @@ function Library:_addDropdown(gb, variant, opts)
         ScrollOffset = 0,
         MaxVisible = 6,
         RowH = 22,
+        _isPopup = true,
     }
 
     if variant == "multi" then
@@ -299,16 +1094,12 @@ function Library:_addDropdown(gb, variant, opts)
 
     local yIn = gb.InnerCursor
     local widgetH = 38
-    dd._yIn = yIn
+    dd._yIn = yIn; dd._height = widgetH
 
     dd.Label = label(Z.WidgetText, Theme.TextDim, 11, dd.Text)
-
-    dd.Header = rect(Z.Widget, Theme.InputBg)
-    dd.Header.Size = Vector2.new(gb.Width - 20, 22); dd.Header.Corner = 3
-
+    dd.Header = rect(Z.Widget, Theme.InputBg); dd.Header.Corner = 3
     dd.HeaderBorder = rect(Z.WidgetBorder, Theme.InputBorder, false)
-    dd.HeaderBorder.Size = dd.Header.Size; dd.HeaderBorder.Thickness = 1; dd.HeaderBorder.Corner = 3
-
+    dd.HeaderBorder.Thickness = 1; dd.HeaderBorder.Corner = 3
     dd.HeaderText = label(Z.WidgetText, Theme.TextPrimary, 12, "")
     dd.Arrow = label(Z.WidgetText, Theme.TextDim, 12, "v")
 
@@ -355,9 +1146,7 @@ function Library:_addDropdown(gb, variant, opts)
     end
 
     function dd:_isDisabledValue(v)
-        for _, d in ipairs(self.DisabledValues) do
-            if d == v then return true end
-        end
+        for _, d in ipairs(self.DisabledValues) do if d == v then return true end end
         return false
     end
 
@@ -393,7 +1182,7 @@ function Library:_addDropdown(gb, variant, opts)
         self.Window._openPopup = self
         if self.Variant == "search" then
             self.SearchText = ""
-            self.Window._focusedSearch = self
+            self.Window._focusedText = self
         end
         self:_layoutPopup()
     end
@@ -401,7 +1190,7 @@ function Library:_addDropdown(gb, variant, opts)
     function dd:_close()
         self.Open = false
         if self.Window._openPopup == self then self.Window._openPopup = nil end
-        if self.Window._focusedSearch == self then self.Window._focusedSearch = nil end
+        if self.Window._focusedText == self then self.Window._focusedText = nil end
         self.PopupBg.Visible = false; self.PopupBorder.Visible = false
         self.SearchBg.Visible = false; self.SearchBorder.Visible = false
         self.SearchTextDraw.Visible = false
@@ -458,18 +1247,15 @@ function Library:_addDropdown(gb, variant, opts)
                 row.BG.Position = Vector2.new(hx + 2, rowY)
                 row.BG.Size = Vector2.new(hw - 4, self.RowH)
                 row.BG.Visible = true
-
                 row.Text.Position = row.BG.Position + Vector2.new(self.Variant == "multi" and 24 or 8, 5)
                 row.Text.Text = val
                 local dis = self:_isDisabledValue(val)
                 row.Text.Color = Color3.fromHex(dis and Theme.TextDisabled or Theme.TextPrimary)
                 row.Text.Visible = true
-
                 local selected = (self.Variant == "multi") and self.MultiSelected[val] or (val == self.Selected)
                 row.Hover.Position = row.BG.Position
                 row.Hover.Size = row.BG.Size
                 row.Hover.Visible = selected and not dis
-
                 if self.Variant == "multi" then
                     row.CheckBox.Position = row.BG.Position + Vector2.new(6, 4)
                     row.CheckBox.Size = Vector2.new(12, 12)
@@ -479,9 +1265,7 @@ function Library:_addDropdown(gb, variant, opts)
                         row.Check.Position = row.CheckBox.Position + Vector2.new(2, 2)
                         row.Check.Size = Vector2.new(8, 8)
                         row.Check.Visible = true
-                    else
-                        row.Check.Visible = false
-                    end
+                    else row.Check.Visible = false end
                 else
                     row.CheckBox.Visible = false; row.Check.Visible = false
                 end
@@ -526,12 +1310,15 @@ function Library:_addDropdown(gb, variant, opts)
         if not state then self:_close() end
     end
 
-    function dd:_reposition(winPos)
+    function dd:_reposition()
         local gx = self.Gb.BG.Position.X
         local gy = self.Gb.BG.Position.Y + self._yIn
+        local w = self.Gb.Width - 20
         self.Label.Position = Vector2.new(gx + 10, gy)
         self.Header.Position = Vector2.new(gx + 10, gy + 14)
+        self.Header.Size = Vector2.new(w, 22)
         self.HeaderBorder.Position = self.Header.Position
+        self.HeaderBorder.Size = self.Header.Size
         self.HeaderText.Position = self.Header.Position + Vector2.new(8, 4)
         self.Arrow.Position = self.Header.Position + Vector2.new(self.Header.Size.X - 14, 4)
         if self.Open then self:_layoutPopup() end
@@ -552,7 +1339,7 @@ function Library:_addDropdown(gb, variant, opts)
                 self.ScrollOffset = self.ScrollOffset + 1; self:_layoutPopup(); return true
             end
             if self.Variant == "search" and pointIn(mPos, self.SearchBg.Position, self.SearchBg.Size) then
-                self.Window._focusedSearch = self
+                self.Window._focusedText = self
                 return true
             end
             for _, row in ipairs(self._rowPool) do
@@ -562,8 +1349,7 @@ function Library:_addDropdown(gb, variant, opts)
                         if self.Variant == "multi" then
                             self.MultiSelected[v] = (not self.MultiSelected[v]) or nil
                             if not self.MultiSelected[v] then self.MultiSelected[v] = nil end
-                            self:_layoutPopup()
-                            self:_refreshHeader()
+                            self:_layoutPopup(); self:_refreshHeader()
                             local snap = {}
                             for _, val in ipairs(self:_getValues()) do
                                 if self.MultiSelected[val] then table.insert(snap, val) end
@@ -571,8 +1357,7 @@ function Library:_addDropdown(gb, variant, opts)
                             self.Callback(snap)
                         else
                             self.Selected = v
-                            self:_close()
-                            self:_refreshHeader()
+                            self:_close(); self:_refreshHeader()
                             self.Callback(v)
                         end
                     end
@@ -585,13 +1370,12 @@ function Library:_addDropdown(gb, variant, opts)
     end
 
     function dd:_handleKey(keyCode, shiftHeld)
-        if self.Variant ~= "search" or self.Window._focusedSearch ~= self then return end
+        if self.Variant ~= "search" or self.Window._focusedText ~= self then return end
         local changed = false
         if keyCode >= 48 and keyCode <= 57 then
             self.SearchText = self.SearchText .. tostring(keyCode - 48); changed = true
         elseif keyCode >= 65 and keyCode <= 90 then
-            local c = string.char(keyCode)
-            if not shiftHeld then c = c:lower() end
+            local c = string.char(keyCode); if not shiftHeld then c = c:lower() end
             self.SearchText = self.SearchText .. c; changed = true
         elseif keyCode == 32 then
             self.SearchText = self.SearchText .. " "; changed = true
@@ -600,7 +1384,7 @@ function Library:_addDropdown(gb, variant, opts)
         elseif keyCode == 27 then
             self:_close(); return
         elseif keyCode == 13 then
-            self.Window._focusedSearch = nil; changed = true
+            self.Window._focusedText = nil; changed = true
         elseif keyCode == 38 then
             self.ScrollOffset = self.ScrollOffset - 1; changed = true
         elseif keyCode == 40 then
@@ -615,13 +1399,15 @@ function Library:_addDropdown(gb, variant, opts)
     table.insert(gb.Widgets, dd)
     self:_growGroupbox(gb, widgetH)
     gb.InnerCursor = gb.InnerCursor + widgetH
-
-    dd:_reposition(self.Pos)
+    dd:_reposition()
     dd:_refreshHeader()
     dd:_setVisible(gb.Tab == self.ActiveTab and self.Visible)
     return dd
 end
 
+-- ============================================================
+-- visibility
+-- ============================================================
 function Library:SetVisible(state)
     self.Visible = state
     for _, entry in ipairs(self.Objects) do entry.obj.Visible = state end
@@ -636,17 +1422,17 @@ function Library:SetVisible(state)
             end
         end
     end
-    if not state and self._openPopup then self._openPopup:_close() end
+    if not state then
+        if self._openPopup then self._openPopup:_close() end
+        self._focusedText = nil
+        self._capturingKeybind = nil
+        self._activeSlider = nil
+    end
 end
 
-local KeyNames = {
-    [48]="0",[49]="1",[50]="2",[51]="3",[52]="4",[53]="5",[54]="6",[55]="7",[56]="8",[57]="9",
-    [8]="Backspace",[13]="Enter",[16]="Shift",[27]="Esc",[32]="Space",[38]="Up",[40]="Down",
-    [65]="A",[66]="B",[67]="C",[68]="D",[69]="E",[70]="F",[71]="G",[72]="H",[73]="I",[74]="J",
-    [75]="K",[76]="L",[77]="M",[78]="N",[79]="O",[80]="P",[81]="Q",[82]="R",[83]="S",[84]="T",
-    [85]="U",[86]="V",[87]="W",[88]="X",[89]="Y",[90]="Z",
-}
-
+-- ============================================================
+-- input + render
+-- ============================================================
 function Library:Update(Mouse)
     local tDown = iskeypressed(self.ToggleKey)
     if tDown and not self._lastToggle then self:SetVisible(not self.Visible) end
@@ -677,16 +1463,14 @@ function Library:Update(Mouse)
             end
         end
 
-        if not consumed then
-            if self.ActiveTab then
-                for _, gb in ipairs(self.ActiveTab.Groupboxes) do
-                    for _, w in ipairs(gb.Widgets) do
-                        if w._handleClick and not w.Open then
-                            if w:_handleClick(mPos) then consumed = true; break end
-                        end
+        if not consumed and self.ActiveTab then
+            for _, gb in ipairs(self.ActiveTab.Groupboxes) do
+                for _, w in ipairs(gb.Widgets) do
+                    if w._handleClick and not w.Open then
+                        if w:_handleClick(mPos) then consumed = true; break end
                     end
-                    if consumed then break end
                 end
+                if consumed then break end
             end
         end
 
@@ -695,7 +1479,15 @@ function Library:Update(Mouse)
         end
     end
 
-    if not mouse1 then self._dragging = false end
+    if not mouse1 then
+        self._dragging = false
+        self._activeSlider = nil
+    end
+
+    -- slider drag continues while held
+    if mouse1 and self._activeSlider then
+        self._activeSlider:_setValueFromX(mPos.X)
+    end
 
     if self._dragging and mouse1 then
         local delta = mPos - self._dragStart
@@ -703,7 +1495,19 @@ function Library:Update(Mouse)
         self:_applyPositions()
     end
 
-    if self._focusedSearch and iskeypressed then
+    -- keybind capture: any key down fires once and binds
+    if self._capturingKeybind and iskeypressed then
+        for kc in pairs(KeyNames) do
+            if iskeypressed(kc) and kc ~= self.ToggleKey then
+                self._capturingKeybind:_captureKey(kc)
+                self._keyState[kc] = true
+                break
+            end
+        end
+    end
+
+    -- text input (search dropdown or textbox)
+    if self._focusedText and iskeypressed then
         local now = tick()
         local shift = iskeypressed(16)
         for kc in pairs(KeyNames) do
@@ -713,10 +1517,15 @@ function Library:Update(Mouse)
             local fired = (pressed and not was) or (pressed and rep)
             if fired then
                 self._keyRepeat[kc] = now
-                self._focusedSearch:_handleKey(kc, shift)
+                self._focusedText:_handleKey(kc, shift)
             end
             self._keyState[kc] = pressed
             if not pressed then self._keyRepeat[kc] = nil end
+        end
+    else
+        -- reset key state when nothing has focus
+        if not self._capturingKeybind then
+            for kc in pairs(KeyNames) do self._keyState[kc] = iskeypressed(kc) end
         end
     end
 

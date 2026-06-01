@@ -1,42 +1,44 @@
 -- ============================================================
 -- DrawObsidian - Obsidian-style UI built on Matcha Drawing API
--- Part 1: window shell, sidebar, tab switching
+-- Part 2.1: tighter spacing + smaller fonts
 -- ============================================================
 
 local Library = {}
 Library.__index = Library
 
--- palette, matches the obsidian dark look
 local Theme = {
-    WindowBg     = "#101012",
-    SidebarBg    = "#0c0c0e",
-    TopBarBg     = "#161618",
-    ContentBg    = "#101012",
-    TabIdle      = "#0c0c0e",
-    TabHover     = "#1a1a1d",
-    TabActive    = "#161618",
+    WindowBg     = "#0f0f12",
+    SidebarBg    = "#0a0a0d",
+    ContentBg    = "#0f0f12",
+    TabIdle      = "#0a0a0d",
+    TabHover     = "#16161a",
+    TabActive    = "#16161a",
     Accent       = "#7c5cff",
-    Border       = "#2a2a2e",
-    BorderLight  = "#3a3a40",
+    Border       = "#23232a",
+    BorderLight  = "#33333c",
+    GroupboxBg   = "#131318",
     TextPrimary  = "#ffffff",
-    TextDim      = "#8a8a92",
-    TextDisabled = "#55555c",
+    TextDim      = "#7a7a82",
+    TextDisabled = "#4a4a52",
 }
 
 local Z = {
-    Bg      = 10,
-    Panel   = 20,
-    Border  = 25,
-    Tab     = 30,
-    TabText = 35,
-    Widget  = 40,
-    WidgetText = 45,
-    Popup   = 80,
-    PopupText = 85,
+    Bg         = 10,
+    Panel      = 20,
+    Border     = 25,
+    Tab        = 30,
+    TabText    = 35,
+    Groupbox   = 40,
+    GroupboxBorder = 42,
+    GroupboxText   = 45,
+    Widget     = 50,
+    WidgetText = 55,
+    Popup      = 80,
+    PopupText  = 85,
 }
 
 -- ============================================================
--- small drawing helpers
+-- drawing helpers
 -- ============================================================
 local function rect(z, hex, filled)
     local d = Drawing.new("Square")
@@ -75,15 +77,13 @@ function Library.CreateWindow(opts)
 
     self.Title    = opts.Title or "Obsidian"
     self.Pos      = Vector2.new(opts.X or 120, opts.Y or 90)
-    self.Size     = Vector2.new(opts.Width or 720, opts.Height or 540)
-    self.SidebarW = opts.SidebarWidth or 170
-    self.TopBarH  = 0
+    self.Size     = Vector2.new(opts.Width or 580, opts.Height or 420)
+    self.SidebarW = opts.SidebarWidth or 140
 
     self.Tabs = {}
     self.ActiveTab = nil
     self.Visible = true
     self.ToggleKey = opts.ToggleKey or 0x2D
-    self.Debug = opts.Debug or false
 
     self.Objects = {}
     self._dragging = false
@@ -92,40 +92,37 @@ function Library.CreateWindow(opts)
     self._lastMouse1 = false
     self._lastToggle = false
 
+    -- main background
     self.Bg = rect(Z.Bg, Theme.WindowBg)
     self.Bg.Size = self.Size
-    self.Bg.Corner = 6
+    self.Bg.Corner = 4
     table.insert(self.Objects, { obj = self.Bg, off = Vector2.new(0, 0) })
 
     self.BgBorder = rect(Z.Border, Theme.Border, false)
     self.BgBorder.Size = self.Size
     self.BgBorder.Thickness = 1
-    self.BgBorder.Corner = 6
+    self.BgBorder.Corner = 4
     table.insert(self.Objects, { obj = self.BgBorder, off = Vector2.new(0, 0) })
 
     self.Sidebar = rect(Z.Panel, Theme.SidebarBg)
     self.Sidebar.Size = Vector2.new(self.SidebarW, self.Size.Y)
-    self.Sidebar.Corner = 6
+    self.Sidebar.Corner = 4
     table.insert(self.Objects, { obj = self.Sidebar, off = Vector2.new(0, 0) })
 
     self.SidebarDivider = rect(Z.Border, Theme.Border)
     self.SidebarDivider.Size = Vector2.new(1, self.Size.Y)
     table.insert(self.Objects, { obj = self.SidebarDivider, off = Vector2.new(self.SidebarW, 0) })
 
-    self.TitleText = label(Z.TabText, Theme.TextPrimary, 20, self.Title, true)
-    table.insert(self.Objects, { obj = self.TitleText, off = Vector2.new(48, 22) })
-
-    self.Logo = rect(Z.Tab, Theme.Accent)
-    self.Logo.Size = Vector2.new(22, 22)
-    self.Logo.Corner = 5
-    table.insert(self.Objects, { obj = self.Logo, off = Vector2.new(18, 21) })
+    -- header title (no fake logo, cleaner)
+    self.TitleText = label(Z.TabText, Theme.TextPrimary, 16, self.Title, true)
+    table.insert(self.Objects, { obj = self.TitleText, off = Vector2.new(14, 16) })
 
     self.Content = rect(Z.Panel, Theme.ContentBg)
     self.Content.Size = Vector2.new(self.Size.X - self.SidebarW - 1, self.Size.Y)
     table.insert(self.Objects, { obj = self.Content, off = Vector2.new(self.SidebarW + 1, 0) })
 
-    self.Footer = label(Z.TabText, Theme.TextDim, 11, "version: drawobsidian")
-    table.insert(self.Objects, { obj = self.Footer, off = Vector2.new(18, self.Size.Y - 22) })
+    self.Footer = label(Z.TabText, Theme.TextDim, 10, "version: drawobsidian")
+    table.insert(self.Objects, { obj = self.Footer, off = Vector2.new(14, self.Size.Y - 16) })
 
     self:_applyPositions()
     return self
@@ -138,9 +135,19 @@ function Library:_applyPositions()
     for _, tab in ipairs(self.Tabs) do
         tab.BG.Position     = self.Pos + tab.Off
         tab.Border.Position = tab.BG.Position
-        tab.Text.Position   = tab.BG.Position + Vector2.new(14, 8)
+        tab.Text.Position   = tab.BG.Position + Vector2.new(10, 6)
         tab.Accent.Position = tab.BG.Position
+        for _, gb in ipairs(tab.Groupboxes) do
+            self:_repositionGroupbox(gb)
+        end
     end
+end
+
+function Library:_repositionGroupbox(gb)
+    gb.BG.Position     = self.Pos + gb.Off
+    gb.Border.Position = gb.BG.Position
+    gb.Title.Position  = gb.BG.Position + Vector2.new(10, -7)
+    gb.TitleBg.Position = gb.BG.Position + Vector2.new(8, -8)
 end
 
 -- ============================================================
@@ -148,27 +155,37 @@ end
 -- ============================================================
 function Library:AddTab(name)
     local index = #self.Tabs + 1
-    local yOff = 64 + (index - 1) * 38
+    local yOff = 50 + (index - 1) * 30   -- tighter row stride
 
     local tab = {}
     tab.Name = name
-    tab.Off = Vector2.new(10, yOff)
+    tab.Off = Vector2.new(8, yOff)
     tab.Groupboxes = {}
+    tab.LeftCursor = 14
+    tab.RightCursor = 14
+    tab.Window = self
 
     tab.BG = rect(Z.Tab, Theme.TabIdle)
-    tab.BG.Size = Vector2.new(self.SidebarW - 20, 32)
-    tab.BG.Corner = 5
+    tab.BG.Size = Vector2.new(self.SidebarW - 16, 26)
+    tab.BG.Corner = 4
 
     tab.Border = rect(Z.Border, Theme.TabIdle, false)
     tab.Border.Size = tab.BG.Size
     tab.Border.Thickness = 1
-    tab.Border.Corner = 5
+    tab.Border.Corner = 4
 
     tab.Accent = rect(Z.TabText, Theme.Accent)
-    tab.Accent.Size = Vector2.new(3, 32)
-    tab.Accent.Corner = 2
+    tab.Accent.Size = Vector2.new(2, 26)
+    tab.Accent.Corner = 1
 
-    tab.Text = label(Z.TabText, Theme.TextDim, 15, name)
+    tab.Text = label(Z.TabText, Theme.TextDim, 13, name)
+
+    function tab:AddLeftGroupbox(boxName)
+        return self.Window:_createGroupbox(self, "left", boxName)
+    end
+    function tab:AddRightGroupbox(boxName)
+        return self.Window:_createGroupbox(self, "right", boxName)
+    end
 
     table.insert(self.Tabs, tab)
 
@@ -189,6 +206,87 @@ function Library:SetActiveTab(tab)
         t.Text.Color = Color3.fromHex(active and Theme.TextPrimary or Theme.TextDim)
         t.Accent.Visible = active and self.Visible
     end
+    for _, t in ipairs(self.Tabs) do
+        local show = (t == tab) and self.Visible
+        for _, gb in ipairs(t.Groupboxes) do
+            self:_setGroupboxVisible(gb, show)
+        end
+    end
+end
+
+-- ============================================================
+-- Groupboxes
+-- ============================================================
+function Library:_createGroupbox(tab, side, name)
+    local gb = {}
+    gb.Name = name
+    gb.Side = side
+    gb.Tab = tab
+
+    local contentW = self.Size.X - self.SidebarW - 1
+    local gutter = 10
+    local colW = (contentW - gutter * 3) / 2
+    local xOff
+    if side == "left" then
+        xOff = self.SidebarW + 1 + gutter
+    else
+        xOff = self.SidebarW + 1 + gutter * 2 + colW
+    end
+
+    gb.Width = colW
+    gb.Height = 50
+
+    local cursor = (side == "left") and tab.LeftCursor or tab.RightCursor
+    gb.Off = Vector2.new(xOff, cursor)
+
+    gb.BG = rect(Z.Groupbox, Theme.GroupboxBg)
+    gb.BG.Size = Vector2.new(gb.Width, gb.Height)
+    gb.BG.Corner = 4
+
+    gb.Border = rect(Z.GroupboxBorder, Theme.Border, false)
+    gb.Border.Size = gb.BG.Size
+    gb.Border.Thickness = 1
+    gb.Border.Corner = 4
+
+    gb.TitleBg = rect(Z.GroupboxBorder, Theme.WindowBg)
+    gb.TitleBg.Size = Vector2.new(8 + #name * 6 + 8, 3)
+    gb.TitleBg.Filled = true
+
+    gb.Title = label(Z.GroupboxText, Theme.TextPrimary, 12, name, true)
+
+    gb.InnerCursor = 14
+    gb.Widgets = {}
+
+    local newCursor = cursor + gb.Height + 10
+    if side == "left" then
+        tab.LeftCursor = newCursor
+    else
+        tab.RightCursor = newCursor
+    end
+
+    table.insert(tab.Groupboxes, gb)
+    self:_repositionGroupbox(gb)
+    self:_setGroupboxVisible(gb, tab == self.ActiveTab and self.Visible)
+    return gb
+end
+
+function Library:_setGroupboxVisible(gb, state)
+    gb.BG.Visible = state
+    gb.Border.Visible = state
+    gb.Title.Visible = state
+    gb.TitleBg.Visible = state
+end
+
+function Library:_growGroupbox(gb, addedHeight)
+    gb.Height = gb.Height + addedHeight
+    gb.BG.Size = Vector2.new(gb.Width, gb.Height)
+    gb.Border.Size = gb.BG.Size
+    local tab = gb.Tab
+    if gb.Side == "left" then
+        tab.LeftCursor = tab.LeftCursor + addedHeight
+    else
+        tab.RightCursor = tab.RightCursor + addedHeight
+    end
 end
 
 -- ============================================================
@@ -204,15 +302,16 @@ function Library:SetVisible(state)
         tab.Border.Visible = state
         tab.Text.Visible = state
         tab.Accent.Visible = state and (tab == self.ActiveTab)
+        for _, gb in ipairs(tab.Groupboxes) do
+            local show = state and (tab == self.ActiveTab)
+            self:_setGroupboxVisible(gb, show)
+        end
     end
 end
 
 -- ============================================================
 -- input + render
 -- ============================================================
--- remove the getMousePos helper entirely
-
--- Update takes the same Mouse you grab at top level, like the bloxstrike ui
 function Library:Update(Mouse)
     local tDown = iskeypressed(self.ToggleKey)
     if tDown and not self._lastToggle then
@@ -264,6 +363,5 @@ Library.Z = Z
 Library._rect = rect
 Library._label = label
 Library._pointIn = pointIn
-Library._getMousePos = getMousePos
 
 return Library

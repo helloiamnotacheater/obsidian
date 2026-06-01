@@ -66,23 +66,6 @@ local function pointIn(pos, rPos, rSize)
        and pos.Y >= rPos.Y and pos.Y <= rPos.Y + rSize.Y
 end
 
--- mouse position helper, cache GetMouse once then reuse
-local _cachedMouse = nil
-local function getMousePos()
-    if getmouseposition then
-        local p = getmouseposition()
-        if p then return Vector2.new(p.X or p[1] or 0, p.Y or p[2] or 0) end
-    end
-    if not _cachedMouse then
-        local lp = game:GetService("Players").LocalPlayer
-        if lp then _cachedMouse = lp:GetMouse() end
-    end
-    if _cachedMouse and _cachedMouse.X then
-        return Vector2.new(_cachedMouse.X, _cachedMouse.Y)
-    end
-    return Vector2.new(0, 0)
-end
-
 -- ============================================================
 -- Window
 -- ============================================================
@@ -227,7 +210,10 @@ end
 -- ============================================================
 -- input + render
 -- ============================================================
-function Library:Update()
+-- remove the getMousePos helper entirely
+
+-- Update takes the same Mouse you grab at top level, like the bloxstrike ui
+function Library:Update(Mouse)
     local tDown = iskeypressed(self.ToggleKey)
     if tDown and not self._lastToggle then
         self:SetVisible(not self.Visible)
@@ -239,17 +225,11 @@ function Library:Update()
         return
     end
 
-    local mPos = getMousePos()
+    local mPos = Vector2.new(Mouse.X, Mouse.Y)
     local mouse1 = ismouse1pressed()
     local clicked = mouse1 and not self._lastMouse1
 
     if clicked then
-        if self.Debug then
-            print("[drag] click at", mPos.X, mPos.Y,
-                  "| window at", self.Pos.X, self.Pos.Y,
-                  "| size", self.Size.X, self.Size.Y)
-        end
-
         local hitTab = false
         for _, tab in ipairs(self.Tabs) do
             if pointIn(mPos, tab.BG.Position, tab.BG.Size) then
@@ -258,21 +238,14 @@ function Library:Update()
                 break
             end
         end
-
-        -- TEMP: whole window draggable to confirm drag works at all
-        if not hitTab then
-            if pointIn(mPos, self.Pos, self.Size) then
-                self._dragging = true
-                self._dragStart = mPos
-                self._startPos = self.Pos
-                if self.Debug then print("[drag] grabbed") end
-            end
+        if not hitTab and pointIn(mPos, self.Pos, self.Size) then
+            self._dragging = true
+            self._dragStart = mPos
+            self._startPos = self.Pos
         end
     end
 
-    if not mouse1 then
-        self._dragging = false
-    end
+    if not mouse1 then self._dragging = false end
 
     if self._dragging and mouse1 then
         local delta = mPos - self._dragStart

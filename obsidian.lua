@@ -15,7 +15,7 @@ local Theme = {
     TabIdle      = "#0c0c0e",
     TabHover     = "#1a1a1d",
     TabActive    = "#161618",
-    Accent       = "#7c5cff",  -- obsidian uses a purple accent
+    Accent       = "#7c5cff",
     Border       = "#2a2a2e",
     BorderLight  = "#3a3a40",
     TextPrimary  = "#ffffff",
@@ -23,7 +23,6 @@ local Theme = {
     TextDisabled = "#55555c",
 }
 
--- z layers so things stack predictably
 local Z = {
     Bg      = 10,
     Panel   = 20,
@@ -67,21 +66,19 @@ local function pointIn(pos, rPos, rSize)
        and pos.Y >= rPos.Y and pos.Y <= rPos.Y + rSize.Y
 end
 
--- mouse position helper, tries the matcha ways then falls back
+-- mouse position helper, cache GetMouse once then reuse
+local _cachedMouse = nil
 local function getMousePos()
     if getmouseposition then
         local p = getmouseposition()
         if p then return Vector2.new(p.X or p[1] or 0, p.Y or p[2] or 0) end
     end
-    if getmouselocation then
-        local p = getmouselocation()
-        if p then return Vector2.new(p.X or p[1] or 0, p.Y or p[2] or 0) end
+    if not _cachedMouse then
+        local lp = game:GetService("Players").LocalPlayer
+        if lp then _cachedMouse = lp:GetMouse() end
     end
-    local Players = game:GetService("Players")
-    local lp = Players.LocalPlayer
-    if lp then
-        local m = lp:GetMouse()
-        if m and m.X then return Vector2.new(m.X, m.Y) end
+    if _cachedMouse and _cachedMouse.X then
+        return Vector2.new(_cachedMouse.X, _cachedMouse.Y)
     end
     return Vector2.new(0, 0)
 end
@@ -102,7 +99,8 @@ function Library.CreateWindow(opts)
     self.Tabs = {}
     self.ActiveTab = nil
     self.Visible = true
-    self.ToggleKey = opts.ToggleKey or 0x2D  -- Insert by default
+    self.ToggleKey = opts.ToggleKey or 0x2D
+    self.Debug = opts.Debug or false
 
     self.Objects = {}
     self._dragging = false
@@ -111,7 +109,6 @@ function Library.CreateWindow(opts)
     self._lastMouse1 = false
     self._lastToggle = false
 
-    -- main background
     self.Bg = rect(Z.Bg, Theme.WindowBg)
     self.Bg.Size = self.Size
     self.Bg.Corner = 6
@@ -123,33 +120,27 @@ function Library.CreateWindow(opts)
     self.BgBorder.Corner = 6
     table.insert(self.Objects, { obj = self.BgBorder, off = Vector2.new(0, 0) })
 
-    -- sidebar background
     self.Sidebar = rect(Z.Panel, Theme.SidebarBg)
     self.Sidebar.Size = Vector2.new(self.SidebarW, self.Size.Y)
     self.Sidebar.Corner = 6
     table.insert(self.Objects, { obj = self.Sidebar, off = Vector2.new(0, 0) })
 
-    -- sidebar right divider
     self.SidebarDivider = rect(Z.Border, Theme.Border)
     self.SidebarDivider.Size = Vector2.new(1, self.Size.Y)
     table.insert(self.Objects, { obj = self.SidebarDivider, off = Vector2.new(self.SidebarW, 0) })
 
-    -- title in the sidebar header
     self.TitleText = label(Z.TabText, Theme.TextPrimary, 20, self.Title, true)
     table.insert(self.Objects, { obj = self.TitleText, off = Vector2.new(48, 22) })
 
-    -- a little accent square as a fake logo
     self.Logo = rect(Z.Tab, Theme.Accent)
     self.Logo.Size = Vector2.new(22, 22)
     self.Logo.Corner = 5
     table.insert(self.Objects, { obj = self.Logo, off = Vector2.new(18, 21) })
 
-    -- content area background (right of sidebar)
     self.Content = rect(Z.Panel, Theme.ContentBg)
     self.Content.Size = Vector2.new(self.Size.X - self.SidebarW - 1, self.Size.Y)
     table.insert(self.Objects, { obj = self.Content, off = Vector2.new(self.SidebarW + 1, 0) })
 
-    -- version / footer text bottom of sidebar
     self.Footer = label(Z.TabText, Theme.TextDim, 11, "version: drawobsidian")
     table.insert(self.Objects, { obj = self.Footer, off = Vector2.new(18, self.Size.Y - 22) })
 
@@ -157,7 +148,6 @@ function Library.CreateWindow(opts)
     return self
 end
 
--- reposition every tracked object from the window origin
 function Library:_applyPositions()
     for _, entry in ipairs(self.Objects) do
         entry.obj.Position = self.Pos + entry.off
@@ -171,7 +161,7 @@ function Library:_applyPositions()
 end
 
 -- ============================================================
--- Tabs (sidebar entries)
+-- Tabs
 -- ============================================================
 function Library:AddTab(name)
     local index = #self.Tabs + 1
@@ -235,7 +225,7 @@ function Library:SetVisible(state)
 end
 
 -- ============================================================
--- input + render, call once per frame from the main loop
+-- input + render
 -- ============================================================
 function Library:Update()
     local tDown = iskeypressed(self.ToggleKey)
@@ -254,6 +244,12 @@ function Library:Update()
     local clicked = mouse1 and not self._lastMouse1
 
     if clicked then
+        if self.Debug then
+            print("[drag] click at", mPos.X, mPos.Y,
+                  "| window at", self.Pos.X, self.Pos.Y,
+                  "| size", self.Size.X, self.Size.Y)
+        end
+
         local hitTab = false
         for _, tab in ipairs(self.Tabs) do
             if pointIn(mPos, tab.BG.Position, tab.BG.Size) then
@@ -263,13 +259,13 @@ function Library:Update()
             end
         end
 
+        -- TEMP: whole window draggable to confirm drag works at all
         if not hitTab then
-            local headerPos = self.Pos
-            local headerSize = Vector2.new(self.SidebarW, 60)
-            if pointIn(mPos, headerPos, headerSize) then
+            if pointIn(mPos, self.Pos, self.Size) then
                 self._dragging = true
                 self._dragStart = mPos
                 self._startPos = self.Pos
+                if self.Debug then print("[drag] grabbed") end
             end
         end
     end
@@ -288,7 +284,7 @@ function Library:Update()
 end
 
 -- ============================================================
--- expose helpers so later parts and user code can read them
+-- exports
 -- ============================================================
 Library.Theme = Theme
 Library.Z = Z

@@ -34,9 +34,6 @@ local Z = {
     Popup = 80, PopupBorder = 82, PopupText = 85, PopupOver = 88,
 }
 
--- ============================================================
--- helpers
--- ============================================================
 local function rect(z, hex, filled)
     local d = Drawing.new("Square")
     d.Visible = false; d.Transparency = 1; d.ZIndex = z
@@ -59,9 +56,26 @@ local function pointIn(pos, rPos, rSize)
        and pos.Y >= rPos.Y and pos.Y <= rPos.Y + rSize.Y
 end
 
--- ============================================================
--- Window
--- ============================================================
+-- safe Teams resolver, some matcha builds dont expose GetTeams
+local function listTeamNames()
+    local out = {}
+    local ok, teams = pcall(function() return game:GetService("Teams") end)
+    if not ok or not teams then return out end
+    -- try the API method first, fall back to GetChildren
+    local ok2, list = pcall(function() return teams:GetTeams() end)
+    if ok2 and type(list) == "table" then
+        for _, t in ipairs(list) do table.insert(out, t.Name) end
+    else
+        for _, c in ipairs(teams:GetChildren()) do
+            if c.ClassName == "Team" or (c.IsA and c:IsA("Team")) then
+                table.insert(out, c.Name)
+            end
+        end
+    end
+    table.sort(out)
+    return out
+end
+
 function Library.CreateWindow(opts)
     opts = opts or {}
     local self = setmetatable({}, Library)
@@ -74,7 +88,7 @@ function Library.CreateWindow(opts)
     self.Tabs = {}
     self.ActiveTab = nil
     self.Visible = true
-    self.ToggleKey = opts.ToggleKey or 0x70   -- F1 default
+    self.ToggleKey = opts.ToggleKey or 0x70
 
     self.Objects = {}
     self._dragging = false
@@ -82,7 +96,7 @@ function Library.CreateWindow(opts)
     self._startPos = nil
     self._lastMouse1 = false
     self._lastToggle = false
-    self._openPopup = nil   -- only one popup open at a time
+    self._openPopup = nil
     self._focusedSearch = nil
     self._keyState = {}
     self._keyRepeat = {}
@@ -141,9 +155,6 @@ function Library:_repositionGroupbox(gb)
     gb.TitleBg.Position = gb.BG.Position + Vector2.new(8, -8)
 end
 
--- ============================================================
--- Tabs
--- ============================================================
 function Library:AddTab(name)
     local index = #self.Tabs + 1
     local yOff = 50 + (index - 1) * 30
@@ -185,7 +196,6 @@ function Library:SetActiveTab(tab)
         t.Text.Color = Color3.fromHex(active and Theme.TextPrimary or Theme.TextDim)
         t.Accent.Visible = active and self.Visible
     end
-    -- close any open popup when changing tabs
     if self._openPopup then self._openPopup:_close() end
     for _, t in ipairs(self.Tabs) do
         local show = (t == tab) and self.Visible
@@ -198,9 +208,6 @@ function Library:SetActiveTab(tab)
     end
 end
 
--- ============================================================
--- Groupboxes
--- ============================================================
 function Library:_createGroupbox(tab, side, name)
     local gb = {}
     gb.Name = name; gb.Side = side; gb.Tab = tab
@@ -212,7 +219,7 @@ function Library:_createGroupbox(tab, side, name)
                                    or  (self.SidebarW + 1 + gutter * 2 + colW)
 
     gb.Width = colW
-    gb.Height = 14   -- starts tiny, widgets grow it
+    gb.Height = 14
     gb.InnerCursor = 14
     gb.Widgets = {}
 
@@ -230,7 +237,6 @@ function Library:_createGroupbox(tab, side, name)
 
     gb.Title = label(Z.GroupboxText, Theme.TextPrimary, 12, name, true)
 
-    -- widget-adding methods, bound to library so popup state is shared
     gb.Window = self
     function gb:AddDropdown(opts)       return self.Window:_addDropdown(self, "single", opts) end
     function gb:AddSearchDropdown(opts) return self.Window:_addDropdown(self, "search", opts) end
@@ -263,18 +269,6 @@ function Library:_growGroupbox(gb, addedHeight)
     else tab.RightCursor = tab.RightCursor + addedHeight end
 end
 
--- ============================================================
--- Dropdown widget (handles all variants)
---   variant: "single" | "search" | "multi" | "player" | "team"
---   opts: {
---     Text     = "Label above the dropdown",
---     Values   = { "a", "b", "c" },     -- ignored for player/team
---     Default  = "a"  OR  { "a", "b" } for multi
---     Disabled = false,
---     DisabledValues = { "b" },          -- per-item disable
---     Callback = function(value) end,    -- value is string for single, table for multi
---   }
--- ============================================================
 function Library:_addDropdown(gb, variant, opts)
     opts = opts or {}
     local dd = {
@@ -303,17 +297,12 @@ function Library:_addDropdown(gb, variant, opts)
         dd.Selected = opts.Default
     end
 
-    -- player/team variants get auto-populated below
-
-    -- geometry inside the groupbox
     local yIn = gb.InnerCursor
-    local widgetH = 38   -- label + dropdown header
+    local widgetH = 38
     dd._yIn = yIn
 
-    -- label above
     dd.Label = label(Z.WidgetText, Theme.TextDim, 11, dd.Text)
 
-    -- header bar (the closed dropdown row)
     dd.Header = rect(Z.Widget, Theme.InputBg)
     dd.Header.Size = Vector2.new(gb.Width - 20, 22); dd.Header.Corner = 3
 
@@ -323,19 +312,15 @@ function Library:_addDropdown(gb, variant, opts)
     dd.HeaderText = label(Z.WidgetText, Theme.TextPrimary, 12, "")
     dd.Arrow = label(Z.WidgetText, Theme.TextDim, 12, "v")
 
-    -- popup objects, built lazily per-row when opened
-    dd.PopupBg = rect(Z.Popup, Theme.PopupBg)
-    dd.PopupBg.Corner = 3
+    dd.PopupBg = rect(Z.Popup, Theme.PopupBg); dd.PopupBg.Corner = 3
     dd.PopupBorder = rect(Z.PopupBorder, Theme.BorderLight, false)
     dd.PopupBorder.Thickness = 1; dd.PopupBorder.Corner = 3
 
-    -- search input inside popup (only used for "search" variant)
     dd.SearchBg = rect(Z.Popup, Theme.InputBg); dd.SearchBg.Corner = 3
     dd.SearchBorder = rect(Z.PopupBorder, Theme.InputBorder, false)
     dd.SearchBorder.Thickness = 1; dd.SearchBorder.Corner = 3
     dd.SearchTextDraw = label(Z.PopupText, Theme.TextPrimary, 12, "")
 
-    -- pool of row visuals, reused across opens
     dd._rowPool = {}
     for i = 1, dd.MaxVisible do
         local row = {}
@@ -349,13 +334,11 @@ function Library:_addDropdown(gb, variant, opts)
         table.insert(dd._rowPool, row)
     end
 
-    -- scroll arrows (for long lists, even though MaxVisible is small)
     dd.ScrollUp = rect(Z.Popup, Theme.InputBg); dd.ScrollUp.Visible = false; dd.ScrollUp.Corner = 2
     dd.ScrollUpText = label(Z.PopupText, Theme.TextDim, 12, "^"); dd.ScrollUpText.Visible = false
     dd.ScrollDn = rect(Z.Popup, Theme.InputBg); dd.ScrollDn.Visible = false; dd.ScrollDn.Corner = 2
     dd.ScrollDnText = label(Z.PopupText, Theme.TextDim, 12, "v"); dd.ScrollDnText.Visible = false
 
-    -- methods
     function dd:_getValues()
         if self.Variant == "player" then
             local out = {}
@@ -365,12 +348,7 @@ function Library:_addDropdown(gb, variant, opts)
             table.sort(out)
             return out
         elseif self.Variant == "team" then
-            local out = {}
-            for _, t in ipairs(game:GetService("Teams"):GetTeams()) do
-                table.insert(out, t.Name)
-            end
-            table.sort(out)
-            return out
+            return listTeamNames()
         else
             return self.Values
         end
@@ -396,8 +374,7 @@ function Library:_addDropdown(gb, variant, opts)
     function dd:_displayText()
         if self.Variant == "multi" then
             local names = {}
-            local order = self:_getValues()
-            for _, v in ipairs(order) do
+            for _, v in ipairs(self:_getValues()) do
                 if self.MultiSelected[v] then table.insert(names, v) end
             end
             if #names == 0 then return "---" end
@@ -425,10 +402,8 @@ function Library:_addDropdown(gb, variant, opts)
         self.Open = false
         if self.Window._openPopup == self then self.Window._openPopup = nil end
         if self.Window._focusedSearch == self then self.Window._focusedSearch = nil end
-        self.PopupBg.Visible = false
-        self.PopupBorder.Visible = false
-        self.SearchBg.Visible = false
-        self.SearchBorder.Visible = false
+        self.PopupBg.Visible = false; self.PopupBorder.Visible = false
+        self.SearchBg.Visible = false; self.SearchBorder.Visible = false
         self.SearchTextDraw.Visible = false
         self.ScrollUp.Visible = false; self.ScrollUpText.Visible = false
         self.ScrollDn.Visible = false; self.ScrollDnText.Visible = false
@@ -436,6 +411,7 @@ function Library:_addDropdown(gb, variant, opts)
             row.BG.Visible = false; row.Hover.Visible = false
             row.Text.Visible = false; row.Check.Visible = false; row.CheckBox.Visible = false
         end
+        self:_refreshHeader()
     end
 
     function dd:_layoutPopup()
@@ -469,7 +445,6 @@ function Library:_addDropdown(gb, variant, opts)
             cursorY = cursorY + 24
         end
 
-        -- clamp scroll
         local maxScroll = math.max(0, #values - self.MaxVisible)
         if self.ScrollOffset > maxScroll then self.ScrollOffset = maxScroll end
         if self.ScrollOffset < 0 then self.ScrollOffset = 0 end
@@ -516,7 +491,6 @@ function Library:_addDropdown(gb, variant, opts)
             end
         end
 
-        -- scroll buttons if list overflows
         if #values > self.MaxVisible then
             self.ScrollUp.Position = Vector2.new(hx + hw - 18, cursorY)
             self.ScrollUp.Size = Vector2.new(14, 14)
@@ -565,36 +539,31 @@ function Library:_addDropdown(gb, variant, opts)
 
     function dd:_handleClick(mPos)
         if self.Disabled then return false end
-        -- header click toggles open
         if pointIn(mPos, self.Header.Position, self.Header.Size) then
             if self.Open then self:_close() else self:_open() end
             return true
         end
         if not self.Open then return false end
-        -- popup interactions
         if pointIn(mPos, self.PopupBg.Position, self.PopupBg.Size) then
-            -- scroll arrows
             if self.ScrollUp.Visible and pointIn(mPos, self.ScrollUp.Position, self.ScrollUp.Size) then
                 self.ScrollOffset = self.ScrollOffset - 1; self:_layoutPopup(); return true
             end
             if self.ScrollDn.Visible and pointIn(mPos, self.ScrollDn.Position, self.ScrollDn.Size) then
                 self.ScrollOffset = self.ScrollOffset + 1; self:_layoutPopup(); return true
             end
-            -- search input focus (always focused when popup is open for search variant)
             if self.Variant == "search" and pointIn(mPos, self.SearchBg.Position, self.SearchBg.Size) then
                 self.Window._focusedSearch = self
                 return true
             end
-            -- row clicks
             for _, row in ipairs(self._rowPool) do
                 if row.BG.Visible and pointIn(mPos, row.BG.Position, row.BG.Size) then
                     local v = row.CurrentValue
                     if not self:_isDisabledValue(v) then
                         if self.Variant == "multi" then
-                            self.MultiSelected[v] = not self.MultiSelected[v] or nil
+                            self.MultiSelected[v] = (not self.MultiSelected[v]) or nil
+                            if not self.MultiSelected[v] then self.MultiSelected[v] = nil end
                             self:_layoutPopup()
                             self:_refreshHeader()
-                            -- multi callback receives a list snapshot
                             local snap = {}
                             for _, val in ipairs(self:_getValues()) do
                                 if self.MultiSelected[val] then table.insert(snap, val) end
@@ -610,9 +579,9 @@ function Library:_addDropdown(gb, variant, opts)
                     return true
                 end
             end
-            return true  -- click was inside popup but not on a row, swallow it
+            return true
         end
-        return false   -- click was outside, caller will close us
+        return false
     end
 
     function dd:_handleKey(keyCode, shiftHeld)
@@ -644,8 +613,6 @@ function Library:_addDropdown(gb, variant, opts)
     end
 
     table.insert(gb.Widgets, dd)
-
-    -- expand groupbox to make room for this widget
     self:_growGroupbox(gb, widgetH)
     gb.InnerCursor = gb.InnerCursor + widgetH
 
@@ -655,9 +622,6 @@ function Library:_addDropdown(gb, variant, opts)
     return dd
 end
 
--- ============================================================
--- visibility
--- ============================================================
 function Library:SetVisible(state)
     self.Visible = state
     for _, entry in ipairs(self.Objects) do entry.obj.Visible = state end
@@ -675,9 +639,6 @@ function Library:SetVisible(state)
     if not state and self._openPopup then self._openPopup:_close() end
 end
 
--- ============================================================
--- input + render
--- ============================================================
 local KeyNames = {
     [48]="0",[49]="1",[50]="2",[51]="3",[52]="4",[53]="5",[54]="6",[55]="7",[56]="8",[57]="9",
     [8]="Backspace",[13]="Enter",[16]="Shift",[27]="Esc",[32]="Space",[38]="Up",[40]="Down",
@@ -703,14 +664,12 @@ function Library:Update(Mouse)
     if clicked then
         local consumed = false
 
-        -- open popup gets first shot
         if self._openPopup then
             consumed = self._openPopup:_handleClick(mPos)
             if not consumed then self._openPopup:_close() end
         end
 
         if not consumed then
-            -- tab clicks
             for _, tab in ipairs(self.Tabs) do
                 if pointIn(mPos, tab.BG.Position, tab.BG.Size) then
                     self:SetActiveTab(tab); consumed = true; break
@@ -719,7 +678,6 @@ function Library:Update(Mouse)
         end
 
         if not consumed then
-            -- closed dropdown headers
             if self.ActiveTab then
                 for _, gb in ipairs(self.ActiveTab.Groupboxes) do
                     for _, w in ipairs(gb.Widgets) do
@@ -745,7 +703,6 @@ function Library:Update(Mouse)
         self:_applyPositions()
     end
 
-    -- search-text key handling
     if self._focusedSearch and iskeypressed then
         local now = tick()
         local shift = iskeypressed(16)
@@ -766,7 +723,6 @@ function Library:Update(Mouse)
     self._lastMouse1 = mouse1
 end
 
--- exports
 Library.Theme = Theme
 Library.Z = Z
 

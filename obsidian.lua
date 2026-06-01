@@ -67,6 +67,25 @@ local function pointIn(pos, rPos, rSize)
        and pos.Y >= rPos.Y and pos.Y <= rPos.Y + rSize.Y
 end
 
+-- mouse position helper, tries the matcha ways then falls back
+local function getMousePos()
+    if getmouseposition then
+        local p = getmouseposition()
+        if p then return Vector2.new(p.X or p[1] or 0, p.Y or p[2] or 0) end
+    end
+    if getmouselocation then
+        local p = getmouselocation()
+        if p then return Vector2.new(p.X or p[1] or 0, p.Y or p[2] or 0) end
+    end
+    local Players = game:GetService("Players")
+    local lp = Players.LocalPlayer
+    if lp then
+        local m = lp:GetMouse()
+        if m and m.X then return Vector2.new(m.X, m.Y) end
+    end
+    return Vector2.new(0, 0)
+end
+
 -- ============================================================
 -- Window
 -- ============================================================
@@ -78,14 +97,14 @@ function Library.CreateWindow(opts)
     self.Pos      = Vector2.new(opts.X or 120, opts.Y or 90)
     self.Size     = Vector2.new(opts.Width or 720, opts.Height or 540)
     self.SidebarW = opts.SidebarWidth or 170
-    self.TopBarH  = 0  -- no global top bar in part 1, content starts under title
+    self.TopBarH  = 0
 
-    self.Tabs = {}            -- { {Name=, Button=, ...}, ... }
+    self.Tabs = {}
     self.ActiveTab = nil
     self.Visible = true
     self.ToggleKey = opts.ToggleKey or 0x2D  -- Insert by default
 
-    self.Objects = {}  -- everything for bulk show/hide and drag reposition
+    self.Objects = {}
     self._dragging = false
     self._dragStart = nil
     self._startPos = nil
@@ -143,11 +162,10 @@ function Library:_applyPositions()
     for _, entry in ipairs(self.Objects) do
         entry.obj.Position = self.Pos + entry.off
     end
-    -- tab buttons live in their own list with their own offsets
     for _, tab in ipairs(self.Tabs) do
-        tab.BG.Position    = self.Pos + tab.Off
+        tab.BG.Position     = self.Pos + tab.Off
         tab.Border.Position = tab.BG.Position
-        tab.Text.Position  = tab.BG.Position + Vector2.new(14, 8)
+        tab.Text.Position   = tab.BG.Position + Vector2.new(14, 8)
         tab.Accent.Position = tab.BG.Position
     end
 end
@@ -157,12 +175,12 @@ end
 -- ============================================================
 function Library:AddTab(name)
     local index = #self.Tabs + 1
-    local yOff = 64 + (index - 1) * 38  -- below the title block
+    local yOff = 64 + (index - 1) * 38
 
     local tab = {}
     tab.Name = name
     tab.Off = Vector2.new(10, yOff)
-    tab.Groupboxes = {}  -- filled in later parts
+    tab.Groupboxes = {}
 
     tab.BG = rect(Z.Tab, Theme.TabIdle)
     tab.BG.Size = Vector2.new(self.SidebarW - 20, 32)
@@ -173,7 +191,6 @@ function Library:AddTab(name)
     tab.Border.Thickness = 1
     tab.Border.Corner = 5
 
-    -- left accent bar, shows when active
     tab.Accent = rect(Z.TabText, Theme.Accent)
     tab.Accent.Size = Vector2.new(3, 32)
     tab.Accent.Corner = 2
@@ -182,7 +199,6 @@ function Library:AddTab(name)
 
     table.insert(self.Tabs, tab)
 
-    -- first tab added becomes active
     if not self.ActiveTab then
         self:SetActiveTab(tab)
     end
@@ -221,8 +237,7 @@ end
 -- ============================================================
 -- input + render, call once per frame from the main loop
 -- ============================================================
-function Library:Update(mouse)
-    -- toggle key (edge detected)
+function Library:Update()
     local tDown = iskeypressed(self.ToggleKey)
     if tDown and not self._lastToggle then
         self:SetVisible(not self.Visible)
@@ -234,12 +249,11 @@ function Library:Update(mouse)
         return
     end
 
-    local mPos = Vector2.new(mouse.X, mouse.Y)
+    local mPos = getMousePos()
     local mouse1 = ismouse1pressed()
     local clicked = mouse1 and not self._lastMouse1
 
     if clicked then
-        -- tab clicks
         local hitTab = false
         for _, tab in ipairs(self.Tabs) do
             if pointIn(mPos, tab.BG.Position, tab.BG.Size) then
@@ -249,7 +263,6 @@ function Library:Update(mouse)
             end
         end
 
-        -- drag start, only from the sidebar header area (title bar region)
         if not hitTab then
             local headerPos = self.Pos
             local headerSize = Vector2.new(self.SidebarW, 60)
@@ -275,12 +288,13 @@ function Library:Update(mouse)
 end
 
 -- ============================================================
--- expose theme so later parts and user code can read colors
+-- expose helpers so later parts and user code can read them
 -- ============================================================
 Library.Theme = Theme
 Library.Z = Z
 Library._rect = rect
 Library._label = label
 Library._pointIn = pointIn
+Library._getMousePos = getMousePos
 
 return Library

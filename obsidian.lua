@@ -62,7 +62,7 @@ end
 -- Drawing text top-aligns from its position, so we offset down by
 -- (boxHeight - fontSize) / 2 to visually center it
 local function centerY(boxY, boxH, fontSize)
-    return boxY + math.max(0, (boxH - fontSize) / 2) - 1
+    return boxY + (boxH / 2) - (fontSize / 2) + 1
 end
 
 local function listTeamNames()

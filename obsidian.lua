@@ -1,6 +1,6 @@
 -- ============================================================
 -- DrawObsidian - Matcha Drawing-based Obsidian-style UI
--- Larger default sizing pass
+-- Vertical text centering fixes + textbox multiline wrap
 -- ============================================================
 
 local Library = {}
@@ -58,6 +58,13 @@ local function pointIn(pos, rPos, rSize)
        and pos.Y >= rPos.Y and pos.Y <= rPos.Y + rSize.Y
 end
 
+-- center text Y position inside a box of given height for a given font size
+-- Drawing text top-aligns from its position, so we offset down by
+-- (boxHeight - fontSize) / 2 to visually center it
+local function centerY(boxY, boxH, fontSize)
+    return boxY + math.max(0, (boxH - fontSize) / 2) - 1
+end
+
 local function listTeamNames()
     local out = {}
     local ok, teams = pcall(function() return game:GetService("Teams") end)
@@ -106,6 +113,29 @@ local function rgbToHsv(r, g, b)
         h = h / 6
     end
     return h, s, v
+end
+
+-- word-wrap a string to fit a character-per-line budget, return list of lines
+local function wrapText(text, charsPerLine)
+    if charsPerLine < 1 then return { text } end
+    local lines = {}
+    local cur = ""
+    for word in text:gmatch("%S+") do
+        local cand = (cur == "") and word or (cur .. " " .. word)
+        if #cand > charsPerLine then
+            if cur == "" then
+                -- single word longer than line, just push it
+                table.insert(lines, word); cur = ""
+            else
+                table.insert(lines, cur); cur = word
+            end
+        else
+            cur = cand
+        end
+    end
+    if cur ~= "" then table.insert(lines, cur) end
+    if #lines == 0 then table.insert(lines, "") end
+    return lines
 end
 
 local KeyNames = {
@@ -190,7 +220,7 @@ function Library:_applyPositions()
     for _, tab in ipairs(self.Tabs) do
         tab.BG.Position     = self.Pos + tab.Off
         tab.Border.Position = tab.BG.Position
-        tab.Text.Position   = tab.BG.Position + Vector2.new(12, 7)
+        tab.Text.Position   = Vector2.new(tab.BG.Position.X + 12, centerY(tab.BG.Position.Y, 30, 14))
         tab.Accent.Position = tab.BG.Position
         for _, gb in ipairs(tab.Groupboxes) do
             self:_repositionGroupbox(gb)
@@ -338,6 +368,17 @@ function Library:_growGroupbox(gb, addedHeight)
     else tab.RightCursor = tab.RightCursor + addedHeight end
 end
 
+-- shift widgets below `fromIndex` in groupbox `gb` by `delta` pixels
+-- used when a widget changes height after creation (e.g. textbox wrapping)
+function Library:_shiftWidgetsBelow(gb, fromIndex, delta)
+    for i = fromIndex + 1, #gb.Widgets do
+        local w = gb.Widgets[i]
+        w._yIn = w._yIn + delta
+        if w._reposition then w:_reposition() end
+    end
+    self:_growGroupbox(gb, delta)
+end
+
 -- ============================================================
 -- BUTTON
 -- ============================================================
@@ -352,12 +393,14 @@ function Library:_addButton(gb, opts)
         Disabled = opts.Disabled or false,
         Callback = opts.Callback or function() end,
         _yIn = yIn, _height = widgetH,
+        _fontSize = 13,
+        _boxH = 24,
     }
 
     b.BG = rect(Z.Widget, Theme.ButtonBg); b.BG.Corner = 3
     b.Border = rect(Z.WidgetBorder, Theme.InputBorder, false)
     b.Border.Thickness = 1; b.Border.Corner = 3
-    b.TextDraw = label(Z.WidgetText, Theme.TextPrimary, 13, b.Text)
+    b.TextDraw = label(Z.WidgetText, Theme.TextPrimary, b._fontSize, b.Text)
     b.TextDraw.Center = true
 
     function b:_reposition()
@@ -365,10 +408,11 @@ function Library:_addButton(gb, opts)
         local gy = self.Gb.BG.Position.Y + self._yIn
         local w = self.Gb.Width - 24
         self.BG.Position = Vector2.new(gx + 12, gy)
-        self.BG.Size = Vector2.new(w, 24)
+        self.BG.Size = Vector2.new(w, self._boxH)
         self.Border.Position = self.BG.Position
         self.Border.Size = self.BG.Size
-        self.TextDraw.Position = self.BG.Position + Vector2.new(w / 2, 5)
+        self.TextDraw.Position = Vector2.new(self.BG.Position.X + w / 2,
+                                             centerY(self.BG.Position.Y, self._boxH, self._fontSize))
     end
 
     function b:_setVisible(state)
@@ -405,6 +449,7 @@ function Library:_addToggle(gb, opts)
     opts = opts or {}
     local widgetH = 26
     local yIn = gb.InnerCursor
+    local fontSize = 13
 
     local t = {
         Gb = gb, Window = self,
@@ -415,7 +460,7 @@ function Library:_addToggle(gb, opts)
         _yIn = yIn, _height = widgetH,
     }
 
-    t.TextDraw = label(Z.WidgetText, Theme.TextPrimary, 13, t.Text)
+    t.TextDraw = label(Z.WidgetText, Theme.TextPrimary, fontSize, t.Text)
     t.Track = rect(Z.Widget, Theme.InputBg); t.Track.Corner = 7
     t.TrackBorder = rect(Z.WidgetBorder, Theme.InputBorder, false)
     t.TrackBorder.Thickness = 1; t.TrackBorder.Corner = 7
@@ -424,10 +469,13 @@ function Library:_addToggle(gb, opts)
     function t:_reposition()
         local gx = self.Gb.BG.Position.X
         local gy = self.Gb.BG.Position.Y + self._yIn
-        self.TextDraw.Position = Vector2.new(gx + 12, gy + 3)
+        local rowH = 20
+        self.TextDraw.Position = Vector2.new(gx + 12, centerY(gy, rowH, fontSize))
         local trackW = 30
-        self.Track.Size = Vector2.new(trackW, 14)
-        self.Track.Position = Vector2.new(gx + self.Gb.Width - 12 - trackW, gy + 3)
+        local trackH = 14
+        local trackY = gy + (rowH - trackH) / 2
+        self.Track.Size = Vector2.new(trackW, trackH)
+        self.Track.Position = Vector2.new(gx + self.Gb.Width - 12 - trackW, trackY)
         self.TrackBorder.Position = self.Track.Position
         self.TrackBorder.Size = self.Track.Size
         self.Knob.Size = Vector2.new(10, 10)
@@ -476,6 +524,7 @@ function Library:_addCheckbox(gb, opts)
     opts = opts or {}
     local widgetH = 26
     local yIn = gb.InnerCursor
+    local fontSize = 13
 
     local c = {
         Gb = gb, Window = self,
@@ -490,18 +539,22 @@ function Library:_addCheckbox(gb, opts)
     c.BoxBorder = rect(Z.WidgetBorder, Theme.InputBorder, false)
     c.BoxBorder.Thickness = 1; c.BoxBorder.Corner = 2
     c.Check = rect(Z.WidgetText, Theme.Accent); c.Check.Corner = 1
-    c.TextDraw = label(Z.WidgetText, Theme.TextPrimary, 13, c.Text)
+    c.TextDraw = label(Z.WidgetText, Theme.TextPrimary, fontSize, c.Text)
 
     function c:_reposition()
         local gx = self.Gb.BG.Position.X
         local gy = self.Gb.BG.Position.Y + self._yIn
-        self.Box.Size = Vector2.new(14, 14)
-        self.Box.Position = Vector2.new(gx + 12, gy + 4)
+        local rowH = 20
+        local boxSize = 14
+        local boxY = gy + (rowH - boxSize) / 2
+        self.Box.Size = Vector2.new(boxSize, boxSize)
+        self.Box.Position = Vector2.new(gx + 12, boxY)
         self.BoxBorder.Position = self.Box.Position
         self.BoxBorder.Size = self.Box.Size
         self.Check.Size = Vector2.new(10, 10)
         self.Check.Position = self.Box.Position + Vector2.new(2, 2)
-        self.TextDraw.Position = self.Box.Position + Vector2.new(20, 0)
+        self.TextDraw.Position = Vector2.new(self.Box.Position.X + boxSize + 6,
+                                             centerY(gy, rowH, fontSize))
     end
 
     function c:_setVisible(state)
@@ -545,20 +598,10 @@ function Library:_addLabel(gb, opts)
     local wrap = opts.Wrap == true
     local yIn = gb.InnerCursor
 
-    local lines = {}
+    local lines
     if wrap then
         local charsPerLine = math.max(10, math.floor((gb.Width - 24) / 8))
-        local cur = ""
-        for word in text:gmatch("%S+") do
-            local cand = (cur == "") and word or (cur .. " " .. word)
-            if #cand > charsPerLine then
-                table.insert(lines, cur)
-                cur = word
-            else
-                cur = cand
-            end
-        end
-        if cur ~= "" then table.insert(lines, cur) end
+        lines = wrapText(text, charsPerLine)
     else
         lines = { text }
     end
@@ -636,16 +679,18 @@ function Library:_addSlider(gb, opts)
         local gx = self.Gb.BG.Position.X
         local gy = self.Gb.BG.Position.Y + self._yIn
         local w = self.Gb.Width - 24
+        local trackH = 18
         self.Label.Position = Vector2.new(gx + 12, gy)
-        self.Track.Size = Vector2.new(w, 18)
+        self.Track.Size = Vector2.new(w, trackH)
         self.Track.Position = Vector2.new(gx + 12, gy + 18)
         self.TrackBorder.Position = self.Track.Position
         self.TrackBorder.Size = self.Track.Size
         local pct = (self.Value - self.Min) / math.max(0.0001, (self.Max - self.Min))
         if pct < 0 then pct = 0 elseif pct > 1 then pct = 1 end
         self.Fill.Position = self.Track.Position
-        self.Fill.Size = Vector2.new(math.max(2, w * pct), 18)
-        self.ValueText.Position = self.Track.Position + Vector2.new(w / 2, 2)
+        self.Fill.Size = Vector2.new(math.max(2, w * pct), trackH)
+        self.ValueText.Position = Vector2.new(self.Track.Position.X + w / 2,
+                                              centerY(self.Track.Position.Y, trackH, 12))
         self.ValueText.Text = self:_format()
     end
 
@@ -693,57 +738,128 @@ function Library:_addSlider(gb, opts)
 end
 
 -- ============================================================
--- TEXTBOX
+-- TEXTBOX (now multiline-wrapping)
 -- ============================================================
 function Library:_addTextbox(gb, opts)
     opts = opts or {}
-    local widgetH = 44
     local yIn = gb.InnerCursor
+    local fontSize = 13
+    local lineH = 18
+    local labelH = 16
+    local pad = 6  -- top+bottom inside field
+    local initialBoxH = lineH + pad
+    local widgetH = labelH + initialBoxH + 4
 
     local tb = {
         Gb = gb, Window = self,
         Text = opts.Text or "Textbox",
         Value = opts.Default or "",
         Placeholder = opts.Placeholder or "Type here...",
-        MaxLength = opts.MaxLength or 60,
+        MaxLength = opts.MaxLength or 200,
         Callback = opts.Callback or function() end,
         _yIn = yIn, _height = widgetH,
         _focused = false,
+        _lineH = lineH, _labelH = labelH, _pad = pad,
+        _lines = { "" },
+        _myIndex = #gb.Widgets + 1,  -- for shifting widgets below
     }
 
     tb.Label = label(Z.WidgetText, Theme.TextDim, 12, tb.Text)
     tb.Field = rect(Z.Widget, Theme.InputBg); tb.Field.Corner = 3
     tb.FieldBorder = rect(Z.WidgetBorder, Theme.InputBorder, false)
     tb.FieldBorder.Thickness = 1; tb.FieldBorder.Corner = 3
-    tb.FieldText = label(Z.WidgetText, Theme.TextPrimary, 13, "")
+    -- a pool of line text objects, grow as needed
+    tb._lineDraws = {}
+    for i = 1, 1 do
+        table.insert(tb._lineDraws, label(Z.WidgetText, Theme.TextPrimary, fontSize, ""))
+    end
 
-    function tb:_displayText()
-        if self.Value == "" then return self.Placeholder, true end
-        return self.Value, false
+    function tb:_charsPerLine()
+        -- approx 7px per char at font 13, with 16px horizontal padding
+        return math.max(6, math.floor((self.Gb.Width - 24 - 16) / 7))
+    end
+
+    function tb:_recompute()
+        if self.Value == "" then
+            self._lines = { "" }
+            return
+        end
+        self._lines = wrapText(self.Value, self:_charsPerLine())
+        if #self._lines == 0 then self._lines = { "" } end
+    end
+
+    function tb:_growLineDraws(needed)
+        while #self._lineDraws < needed do
+            table.insert(self._lineDraws, label(Z.WidgetText, Theme.TextPrimary, fontSize, ""))
+        end
     end
 
     function tb:_reposition()
         local gx = self.Gb.BG.Position.X
         local gy = self.Gb.BG.Position.Y + self._yIn
         local w = self.Gb.Width - 24
+
+        self:_recompute()
+        local lineCount = math.max(1, #self._lines)
+        self:_growLineDraws(lineCount)
+
+        local fieldH = lineCount * self._lineH + self._pad
+        local newWidgetH = self._labelH + fieldH + 4
+
+        -- if our height changed, shift everything below us
+        if newWidgetH ~= self._height then
+            local delta = newWidgetH - self._height
+            self._height = newWidgetH
+            -- find our index
+            for i, w_ in ipairs(self.Gb.Widgets) do
+                if w_ == self then
+                    self.Window:_shiftWidgetsBelow(self.Gb, i, delta)
+                    break
+                end
+            end
+        end
+
         self.Label.Position = Vector2.new(gx + 12, gy)
-        self.Field.Position = Vector2.new(gx + 12, gy + 16)
-        self.Field.Size = Vector2.new(w, 24)
+        self.Field.Position = Vector2.new(gx + 12, gy + self._labelH)
+        self.Field.Size = Vector2.new(w, fieldH)
         self.FieldBorder.Position = self.Field.Position
         self.FieldBorder.Size = self.Field.Size
-        self.FieldText.Position = self.Field.Position + Vector2.new(8, 5)
-        local txt, isPlaceholder = self:_displayText()
-        self.FieldText.Text = self._focused and (self.Value == "" and "|" or self.Value) or txt
-        self.FieldText.Color = Color3.fromHex(isPlaceholder and not self._focused and Theme.TextDim or Theme.TextPrimary)
         self.FieldBorder.Color = Color3.fromHex(self._focused and Theme.Accent or Theme.InputBorder)
+
+        -- draw each line of text
+        local isPlaceholder = (self.Value == "" and not self._focused)
+        for i, ld in ipairs(self._lineDraws) do
+            if i <= lineCount then
+                local lineText
+                if isPlaceholder and i == 1 then
+                    lineText = self.Placeholder
+                elseif self.Value == "" and self._focused and i == 1 then
+                    lineText = "|"
+                else
+                    lineText = self._lines[i] or ""
+                    -- add caret to the last line when focused
+                    if self._focused and i == lineCount then
+                        lineText = lineText .. "|"
+                    end
+                end
+                ld.Text = lineText
+                ld.Color = Color3.fromHex(isPlaceholder and Theme.TextDim or Theme.TextPrimary)
+                ld.Position = Vector2.new(self.Field.Position.X + 8,
+                                          self.Field.Position.Y + 4 + (i - 1) * self._lineH)
+                ld.Visible = self.Field.Visible
+            else
+                ld.Visible = false
+            end
+        end
     end
 
     function tb:_setVisible(state)
         self.Label.Visible = state
         self.Field.Visible = state
         self.FieldBorder.Visible = state
-        self.FieldText.Visible = state
+        for _, ld in ipairs(self._lineDraws) do ld.Visible = state end
         if not state then self._focused = false end
+        self:_reposition()
     end
 
     function tb:_handleClick(mPos)
@@ -805,6 +921,7 @@ function Library:_addColor(gb, opts)
     opts = opts or {}
     local widgetH = 26
     local yIn = gb.InnerCursor
+    local fontSize = 13
 
     local default = opts.Default or Color3.fromRGB(255, 255, 255)
     local h, s, v = rgbToHsv(default.R, default.G, default.B)
@@ -818,7 +935,7 @@ function Library:_addColor(gb, opts)
         _yIn = yIn, _height = widgetH,
     }
 
-    cp.TextDraw = label(Z.WidgetText, Theme.TextPrimary, 13, cp.Text)
+    cp.TextDraw = label(Z.WidgetText, Theme.TextPrimary, fontSize, cp.Text)
     cp.Swatch = rect(Z.Widget, "#ffffff")
     cp.SwatchBorder = rect(Z.WidgetBorder, Theme.InputBorder, false)
     cp.SwatchBorder.Thickness = 1
@@ -850,9 +967,11 @@ function Library:_addColor(gb, opts)
     function cp:_reposition()
         local gx = self.Gb.BG.Position.X
         local gy = self.Gb.BG.Position.Y + self._yIn
-        self.TextDraw.Position = Vector2.new(gx + 12, gy + 3)
-        self.Swatch.Size = Vector2.new(20, 14)
-        self.Swatch.Position = Vector2.new(gx + self.Gb.Width - 12 - 20, gy + 3)
+        local rowH = 20
+        self.TextDraw.Position = Vector2.new(gx + 12, centerY(gy, rowH, fontSize))
+        local sw, sh = 20, 14
+        self.Swatch.Size = Vector2.new(sw, sh)
+        self.Swatch.Position = Vector2.new(gx + self.Gb.Width - 12 - sw, gy + (rowH - sh) / 2)
         self.SwatchBorder.Position = self.Swatch.Position
         self.SwatchBorder.Size = self.Swatch.Size
         if self.Open then self:_layoutPopup() end
@@ -972,6 +1091,8 @@ function Library:_addKeybind(gb, opts)
     opts = opts or {}
     local widgetH = 26
     local yIn = gb.InnerCursor
+    local labelFont = 13
+    local keyFont = 12
 
     local kb = {
         Gb = gb, Window = self,
@@ -982,22 +1103,26 @@ function Library:_addKeybind(gb, opts)
         _yIn = yIn, _height = widgetH,
     }
 
-    kb.TextDraw = label(Z.WidgetText, Theme.TextPrimary, 13, kb.Text)
+    kb.TextDraw = label(Z.WidgetText, Theme.TextPrimary, labelFont, kb.Text)
     kb.BG = rect(Z.Widget, Theme.InputBg); kb.BG.Corner = 3
     kb.Border = rect(Z.WidgetBorder, Theme.InputBorder, false)
     kb.Border.Thickness = 1; kb.Border.Corner = 3
-    kb.KeyText = label(Z.WidgetText, Theme.TextDim, 12, "...")
+    kb.KeyText = label(Z.WidgetText, Theme.TextDim, keyFont, "...")
     kb.KeyText.Center = true
 
     function kb:_reposition()
         local gx = self.Gb.BG.Position.X
         local gy = self.Gb.BG.Position.Y + self._yIn
-        self.TextDraw.Position = Vector2.new(gx + 12, gy + 3)
-        self.BG.Size = Vector2.new(48, 18)
-        self.BG.Position = Vector2.new(gx + self.Gb.Width - 12 - 48, gy + 3)
+        local rowH = 20
+        self.TextDraw.Position = Vector2.new(gx + 12, centerY(gy, rowH, labelFont))
+        local bw, bh = 48, 18
+        local by = gy + (rowH - bh) / 2
+        self.BG.Size = Vector2.new(bw, bh)
+        self.BG.Position = Vector2.new(gx + self.Gb.Width - 12 - bw, by)
         self.Border.Position = self.BG.Position
         self.Border.Size = self.BG.Size
-        self.KeyText.Position = self.BG.Position + Vector2.new(24, 2)
+        self.KeyText.Position = Vector2.new(self.BG.Position.X + bw / 2,
+                                            centerY(self.BG.Position.Y, bh, keyFont))
         self.KeyText.Text = self.Capturing and "..." or keyCodeName(self.Key)
         self.Border.Color = Color3.fromHex(self.Capturing and Theme.Accent or Theme.InputBorder)
     end
@@ -1071,14 +1196,17 @@ function Library:_addDropdown(gb, variant, opts)
 
     local yIn = gb.InnerCursor
     local widgetH = 44
+    local labelFont = 12
+    local hdrFont = 13
+    local hdrBoxH = 26
     dd._yIn = yIn; dd._height = widgetH
 
-    dd.Label = label(Z.WidgetText, Theme.TextDim, 12, dd.Text)
+    dd.Label = label(Z.WidgetText, Theme.TextDim, labelFont, dd.Text)
     dd.Header = rect(Z.Widget, Theme.InputBg); dd.Header.Corner = 3
     dd.HeaderBorder = rect(Z.WidgetBorder, Theme.InputBorder, false)
     dd.HeaderBorder.Thickness = 1; dd.HeaderBorder.Corner = 3
-    dd.HeaderText = label(Z.WidgetText, Theme.TextPrimary, 13, "")
-    dd.Arrow = label(Z.WidgetText, Theme.TextDim, 13, "v")
+    dd.HeaderText = label(Z.WidgetText, Theme.TextPrimary, hdrFont, "")
+    dd.Arrow = label(Z.WidgetText, Theme.TextDim, hdrFont, "v")
 
     dd.PopupBg = rect(Z.Popup, Theme.PopupBg); dd.PopupBg.Corner = 3
     dd.PopupBorder = rect(Z.PopupBorder, Theme.BorderLight, false)
@@ -1087,14 +1215,14 @@ function Library:_addDropdown(gb, variant, opts)
     dd.SearchBg = rect(Z.Popup, Theme.InputBg); dd.SearchBg.Corner = 3
     dd.SearchBorder = rect(Z.PopupBorder, Theme.InputBorder, false)
     dd.SearchBorder.Thickness = 1; dd.SearchBorder.Corner = 3
-    dd.SearchTextDraw = label(Z.PopupText, Theme.TextPrimary, 13, "")
+    dd.SearchTextDraw = label(Z.PopupText, Theme.TextPrimary, hdrFont, "")
 
     dd._rowPool = {}
     for i = 1, dd.MaxVisible do
         local row = {}
         row.BG = rect(Z.Popup, Theme.PopupBg)
         row.Hover = rect(Z.Popup, Theme.HoverBg); row.Hover.Visible = false
-        row.Text = label(Z.PopupText, Theme.TextPrimary, 13, "")
+        row.Text = label(Z.PopupText, Theme.TextPrimary, hdrFont, "")
         row.Check = rect(Z.PopupText, Theme.CheckOn); row.Check.Visible = false; row.Check.Corner = 2
         row.CheckBox = rect(Z.PopupText, Theme.InputBg, false)
         row.CheckBox.Visible = false; row.CheckBox.Thickness = 1; row.CheckBox.Corner = 2
@@ -1103,9 +1231,9 @@ function Library:_addDropdown(gb, variant, opts)
     end
 
     dd.ScrollUp = rect(Z.Popup, Theme.InputBg); dd.ScrollUp.Visible = false; dd.ScrollUp.Corner = 2
-    dd.ScrollUpText = label(Z.PopupText, Theme.TextDim, 13, "^"); dd.ScrollUpText.Visible = false
+    dd.ScrollUpText = label(Z.PopupText, Theme.TextDim, hdrFont, "^"); dd.ScrollUpText.Visible = false
     dd.ScrollDn = rect(Z.Popup, Theme.InputBg); dd.ScrollDn.Visible = false; dd.ScrollDn.Corner = 2
-    dd.ScrollDnText = label(Z.PopupText, Theme.TextDim, 13, "v"); dd.ScrollDnText.Visible = false
+    dd.ScrollDnText = label(Z.PopupText, Theme.TextDim, hdrFont, "v"); dd.ScrollDnText.Visible = false
 
     function dd:_getValues()
         if self.Variant == "player" then
@@ -1203,7 +1331,8 @@ function Library:_addDropdown(gb, variant, opts)
             self.SearchBorder.Size = self.SearchBg.Size
             self.SearchBorder.Visible = true
             self.SearchBorder.Color = Color3.fromHex(Theme.Accent)
-            self.SearchTextDraw.Position = self.SearchBg.Position + Vector2.new(7, 4)
+            self.SearchTextDraw.Position = Vector2.new(self.SearchBg.Position.X + 7,
+                                                       centerY(self.SearchBg.Position.Y, 22, hdrFont))
             self.SearchTextDraw.Text = (self.SearchText == "") and "Type to search..." or self.SearchText
             self.SearchTextDraw.Color = Color3.fromHex((self.SearchText == "") and Theme.TextDim or Theme.TextPrimary)
             self.SearchTextDraw.Visible = true
@@ -1223,7 +1352,8 @@ function Library:_addDropdown(gb, variant, opts)
                 row.BG.Position = Vector2.new(hx + 2, rowY)
                 row.BG.Size = Vector2.new(hw - 4, self.RowH)
                 row.BG.Visible = true
-                row.Text.Position = row.BG.Position + Vector2.new(self.Variant == "multi" and 28 or 10, 6)
+                row.Text.Position = Vector2.new(row.BG.Position.X + (self.Variant == "multi" and 28 or 10),
+                                                centerY(row.BG.Position.Y, self.RowH, hdrFont))
                 row.Text.Text = val
                 local dis = self:_isDisabledValue(val)
                 row.Text.Color = Color3.fromHex(dis and Theme.TextDisabled or Theme.TextPrimary)
@@ -1233,7 +1363,8 @@ function Library:_addDropdown(gb, variant, opts)
                 row.Hover.Size = row.BG.Size
                 row.Hover.Visible = selected and not dis
                 if self.Variant == "multi" then
-                    row.CheckBox.Position = row.BG.Position + Vector2.new(7, 5)
+                    row.CheckBox.Position = Vector2.new(row.BG.Position.X + 7,
+                                                       row.BG.Position.Y + (self.RowH - 14) / 2)
                     row.CheckBox.Size = Vector2.new(14, 14)
                     row.CheckBox.Visible = true
                     row.CheckBox.Color = Color3.fromHex(Theme.InputBorder)
@@ -1255,12 +1386,14 @@ function Library:_addDropdown(gb, variant, opts)
             self.ScrollUp.Position = Vector2.new(hx + hw - 22, cursorY)
             self.ScrollUp.Size = Vector2.new(16, 16)
             self.ScrollUp.Visible = true
-            self.ScrollUpText.Position = self.ScrollUp.Position + Vector2.new(5, 1)
+            self.ScrollUpText.Position = Vector2.new(self.ScrollUp.Position.X + 5,
+                                                     centerY(self.ScrollUp.Position.Y, 16, hdrFont))
             self.ScrollUpText.Visible = true
             self.ScrollDn.Position = Vector2.new(hx + hw - 22, cursorY + self.MaxVisible * self.RowH - 16)
             self.ScrollDn.Size = Vector2.new(16, 16)
             self.ScrollDn.Visible = true
-            self.ScrollDnText.Position = self.ScrollDn.Position + Vector2.new(5, 1)
+            self.ScrollDnText.Position = Vector2.new(self.ScrollDn.Position.X + 5,
+                                                     centerY(self.ScrollDn.Position.Y, 16, hdrFont))
             self.ScrollDnText.Visible = true
         else
             self.ScrollUp.Visible = false; self.ScrollUpText.Visible = false
@@ -1292,11 +1425,13 @@ function Library:_addDropdown(gb, variant, opts)
         local w = self.Gb.Width - 24
         self.Label.Position = Vector2.new(gx + 12, gy)
         self.Header.Position = Vector2.new(gx + 12, gy + 16)
-        self.Header.Size = Vector2.new(w, 26)
+        self.Header.Size = Vector2.new(w, hdrBoxH)
         self.HeaderBorder.Position = self.Header.Position
         self.HeaderBorder.Size = self.Header.Size
-        self.HeaderText.Position = self.Header.Position + Vector2.new(10, 5)
-        self.Arrow.Position = self.Header.Position + Vector2.new(self.Header.Size.X - 16, 5)
+        self.HeaderText.Position = Vector2.new(self.Header.Position.X + 10,
+                                               centerY(self.Header.Position.Y, hdrBoxH, hdrFont))
+        self.Arrow.Position = Vector2.new(self.Header.Position.X + self.Header.Size.X - 16,
+                                          centerY(self.Header.Position.Y, hdrBoxH, hdrFont))
         if self.Open then self:_layoutPopup() end
     end
 
